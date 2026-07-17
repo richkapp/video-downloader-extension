@@ -1,0 +1,44 @@
+{
+  "name": "media-downloader",
+  "version": "1.0.0",
+  "description": "Desktop app for managing video downloads via yt-dlp",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "author": "richkapp",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/richkapp/video-downloader-extension.git",
+    "directory": "media-downloader-app"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.mediadownloader.app",
+    "productName": "Media Downloader",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "icon": "assets/icon.icns",
+      "target": ["dmg", "zip"]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "server/**/*",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../download-server-v2.js",
+        "to": "server/download-server-v2.js"
+      }
+    ]
+  }
+}

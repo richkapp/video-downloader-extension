@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Dependencies and generated builds
+node_modules/
+dist/
+build/
+out/
+coverage/
+
+# Runtime files
+*.log
+*.pid
+cookies*.txt
+*.cookies.txt
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor files
+.idea/
+.vscode/
+*.swp
