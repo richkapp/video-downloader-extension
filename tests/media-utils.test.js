@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 
+const projectRoot = path.resolve(__dirname, '..');
+const popupHtml = readFileSync(path.join(projectRoot, 'popup.html'), 'utf8');
+
 const {
   dedupeMedia,
   getMediaSize,
@@ -177,24 +180,37 @@ test('keeps distinct non-YouTube files separate', () => {
 });
 
 test('loads the shared metadata helper before both extension consumers', () => {
-  const projectRoot = path.resolve(__dirname, '..');
-  const popup = readFileSync(path.join(projectRoot, 'popup.html'), 'utf8');
   const background = readFileSync(path.join(projectRoot, 'background.js'), 'utf8');
 
-  assert.ok(popup.indexOf('src="media-utils.js"') < popup.indexOf('src="popup.js"'));
+  assert.ok(popupHtml.indexOf('src="media-utils.js"') < popupHtml.indexOf('src="popup.js"'));
   assert.match(background, /^importScripts\('media-utils\.js'\);/);
 });
 
 test('wires accessible settings tabs to the persistent server API', () => {
-  const projectRoot = path.resolve(__dirname, '..');
-  const popup = readFileSync(path.join(projectRoot, 'popup.html'), 'utf8');
   const popupScript = readFileSync(path.join(projectRoot, 'popup.js'), 'utf8');
 
-  assert.match(popup, /role="tablist"/);
-  assert.match(popup, /id="settingsView"[^>]+role="tabpanel"/);
-  assert.match(popup, /id="settingsForm"/);
+  assert.match(popupHtml, /role="tablist"/);
+  assert.match(popupHtml, /id="settingsView"[^>]+role="tabpanel"/);
+  assert.match(popupHtml, /id="settingsForm"/);
   assert.match(popupScript, /fetch\(`\$\{SERVER_BASE_URL\}\/settings`/);
   assert.match(popupScript, /function selectPopupTab/);
+});
+
+test('includes the creator coffee link in Settings', () => {
+  assert.match(popupHtml, /Support the creator ☕/);
+  assert.match(popupHtml, /href="https:\/\/buymeacoffee\.com\/richkapp"/);
+  assert.match(popupHtml, />\s*Buy the creator a coffee\s*</);
+  assert.match(popupHtml, /target="_blank" rel="noopener noreferrer"/);
+});
+
+test('keeps extension package and server versions aligned', () => {
+  const manifest = JSON.parse(readFileSync(path.join(projectRoot, 'manifest.json'), 'utf8'));
+  const packageJson = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  const server = readFileSync(path.join(projectRoot, 'download-server-v2.js'), 'utf8');
+
+  assert.equal(packageJson.version.replace(/(?:\.0)+$/, ''), manifest.version.replace(/(?:\.0)+$/, ''));
+  assert.match(server, /const \{ version: PACKAGE_VERSION \} = require\('\.\/package\.json'\);/);
+  assert.match(server, /version: SERVER_VERSION,/);
 });
 
 test('orders active downloads first and clamps persisted progress values', () => {

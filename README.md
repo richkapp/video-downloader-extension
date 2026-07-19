@@ -18,6 +18,7 @@ A Chrome/Brave/Edge extension that detects and downloads videos and audio from w
 - **Automatic server lifecycle** - clicking the extension starts the local server; two idle hours stops it
 - **Audio support** - MP3, M4A, AAC, OGG, OPUS, WAV, FLAC, and more
 - **Desktop app** (Electron) with system tray for easy server management
+- **Free and open source** with an optional Buy the Creator a Coffee link in Settings
 
 ## How It Works
 
@@ -78,6 +79,7 @@ The server runs on `http://127.0.0.1:9876`.
 5. On other sites, detected options are sorted from largest to smallest with quality, duration, and size information when available
 6. Monitor progress inside the extension popup; close and reopen it at any time to restore the current server-backed state. The detailed server page remains available at **http://127.0.0.1:9876**
 7. Find your video in the folder selected under **Settings** when complete
+8. If the extension saves you time, Settings includes an optional **Buy the creator a coffee** link
 
 ### Tips
 

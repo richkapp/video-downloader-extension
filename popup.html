@@ -813,6 +813,45 @@
       text-align: center;
     }
 
+    .support-card {
+      justify-items: center;
+      gap: var(--space-2);
+      margin-top: var(--space-3);
+      text-align: center;
+    }
+
+    .support-card h3 {
+      margin: 0;
+      color: var(--color-content);
+      font-size: 14px;
+    }
+
+    .support-card p {
+      max-width: 340px;
+      margin: 0;
+      color: var(--color-content-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .coffee-link {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-2) var(--space-4);
+      border-radius: var(--radius-md);
+      background: var(--color-warning);
+      color: var(--color-accent-ink);
+      font-size: 13px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+
+    .coffee-link:hover {
+      background: #f8d98c;
+    }
+
     .server-instructions {
       padding: var(--space-4);
       border: 1px solid var(--color-border);
@@ -948,6 +987,14 @@
       </div>
       <p id="settingsFeedback" class="settings-feedback" role="status" aria-live="polite"></p>
     </form>
+
+    <section class="settings-card support-card" aria-labelledby="supportTitle">
+      <h3 id="supportTitle">Support the creator ☕</h3>
+      <p>Media Downloader is local-first and free to use. If it saves you time, a coffee keeps the project moving.</p>
+      <a class="coffee-link" href="https://buymeacoffee.com/richkapp" target="_blank" rel="noopener noreferrer">
+        Buy the creator a coffee
+      </a>
+    </section>
   </section>
 
   <script src="media-utils.js"></script>

@@ -5,6 +5,9 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { version: PACKAGE_VERSION } = require('./package.json');
+
+const SERVER_VERSION = PACKAGE_VERSION.replace(/(?:\.0)+$/, '');
 
 const requestedPort = Number.parseInt(process.env.VIDEO_DOWNLOADER_PORT, 10);
 const PORT = Number.isFinite(requestedPort) && requestedPort > 0 && requestedPort <= 65535
@@ -920,7 +923,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'running',
       service: 'video-downloader',
-      version: '1.4',
+      version: SERVER_VERSION,
       downloadDir: serverSettings.downloadDirectory,
       activeDownloads: Array.from(downloads.values()).filter(isActiveDownload).length,
       concurrentFragments: serverSettings.concurrentFragments,
