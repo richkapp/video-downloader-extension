@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const http = require('http');
-const { spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -10,7 +10,8 @@ const requestedPort = Number.parseInt(process.env.VIDEO_DOWNLOADER_PORT, 10);
 const PORT = Number.isFinite(requestedPort) && requestedPort > 0 && requestedPort <= 65535
   ? requestedPort
   : 9876;
-const DOWNLOAD_DIR = path.join(os.homedir(), 'Downloads');
+const HOME_DIR = os.homedir();
+const DEFAULT_DOWNLOAD_DIR = path.join(HOME_DIR, 'Downloads');
 const MAX_DOWNLOAD_HISTORY = 100;
 const ACTIVE_STATUSES = new Set(['starting', 'downloading', 'merging', 'finalizing']);
 const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -20,9 +21,25 @@ const IDLE_TIMEOUT_MS = Number.isFinite(requestedIdleTimeout) && requestedIdleTi
   : DEFAULT_IDLE_TIMEOUT_MS;
 const REAPER_INTERVAL_MS = Math.min(60_000, Math.max(100, Math.floor(IDLE_TIMEOUT_MS / 4)));
 const requestedConcurrency = Number.parseInt(process.env.VIDEO_DOWNLOADER_CONCURRENCY, 10);
-const CONCURRENT_FRAGMENTS = Number.isFinite(requestedConcurrency)
+const DEFAULT_CONCURRENT_FRAGMENTS = Number.isFinite(requestedConcurrency)
   ? Math.min(Math.max(requestedConcurrency, 1), 16)
   : 8;
+const SETTINGS_FILE = process.env.VIDEO_DOWNLOADER_SETTINGS_FILE
+  ? path.resolve(process.env.VIDEO_DOWNLOADER_SETTINGS_FILE)
+  : path.join(
+      HOME_DIR,
+      process.platform === 'darwin' ? 'Library/Application Support/Media Downloader' : '.config/media-downloader',
+      'settings.json'
+    );
+const VIDEO_OUTPUTS = new Set(['compatible-mp4', 'best-quality']);
+const CONCURRENCY_OPTIONS = new Set([2, 4, 8, 12, 16]);
+const HISTORY_LIMIT_OPTIONS = new Set([1, 3, 5, 10]);
+const DEFAULT_SETTINGS = Object.freeze({
+  downloadDirectory: DEFAULT_DOWNLOAD_DIR,
+  videoOutput: 'compatible-mp4',
+  concurrentFragments: DEFAULT_CONCURRENT_FRAGMENTS,
+  historyLimit: 3
+});
 
 // Track active downloads
 const downloads = new Map();
@@ -31,6 +48,7 @@ let downloadId = 0;
 let lastActivityAt = Date.now();
 let reaperTimer = null;
 let shutdownStarted = false;
+let serverSettings = loadSettings();
 
 // SSE clients for live updates
 const clients = new Set();
@@ -42,6 +60,120 @@ function isHttpUrl(value) {
   } catch (error) {
     return false;
   }
+}
+
+function expandHomePath(value) {
+  const trimmed = String(value || '').trim();
+  if (trimmed === '~') return HOME_DIR;
+  if (trimmed.startsWith('~/')) return path.join(HOME_DIR, trimmed.slice(2));
+  return trimmed;
+}
+
+function validateSettings(input, { base = DEFAULT_SETTINGS, checkFilesystem = false } = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { error: 'Settings must be a JSON object' };
+  }
+
+  const downloadDirectory = expandHomePath(input.downloadDirectory ?? base.downloadDirectory);
+  // youtubeFormat is accepted as a one-time migration from settings written by
+  // version 1.3 before the output option applied to other server-downloaded video.
+  const videoOutput = input.videoOutput ?? input.youtubeFormat ?? base.videoOutput ?? base.youtubeFormat;
+  const concurrentFragments = Number(input.concurrentFragments ?? base.concurrentFragments);
+  const historyLimit = Number(input.historyLimit ?? base.historyLimit);
+
+  if (!path.isAbsolute(downloadDirectory)) {
+    return { error: 'Download folder must be an absolute path or begin with ~/' };
+  }
+  if (!VIDEO_OUTPUTS.has(videoOutput)) {
+    return { error: 'Unknown video output format' };
+  }
+  if (!CONCURRENCY_OPTIONS.has(concurrentFragments)) {
+    return { error: 'Concurrent fragments must be 2, 4, 8, 12, or 16' };
+  }
+  if (!HISTORY_LIMIT_OPTIONS.has(historyLimit)) {
+    return { error: 'History limit must be 1, 3, 5, or 10' };
+  }
+
+  if (checkFilesystem) {
+    try {
+      const stats = fs.statSync(downloadDirectory);
+      if (!stats.isDirectory()) return { error: 'Download folder is not a directory' };
+      fs.accessSync(downloadDirectory, fs.constants.W_OK);
+    } catch (error) {
+      return { error: 'Download folder must already exist and be writable' };
+    }
+  }
+
+  return {
+    settings: {
+      downloadDirectory: path.normalize(downloadDirectory),
+      videoOutput,
+      concurrentFragments,
+      historyLimit
+    }
+  };
+}
+
+function loadSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    return validateSettings(parsed).settings || { ...DEFAULT_SETTINGS };
+  } catch (error) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(settings) {
+  const directory = path.dirname(SETTINGS_FILE);
+  const temporaryFile = `${SETTINGS_FILE}.${process.pid}.tmp`;
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(temporaryFile, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryFile, SETTINGS_FILE);
+}
+
+function settingsPayload() {
+  return {
+    settings: { ...serverSettings },
+    defaults: { ...DEFAULT_SETTINGS }
+  };
+}
+
+function macFolderPickerArgs(initialDirectory) {
+  return [
+    '-l', 'JavaScript',
+    '-e', 'function run(argv) { if (argv[1] === "__SYNTAX_CHECK__") return "__READY__"; const app = Application.currentApplication(); app.includeStandardAdditions = true; try { const folder = app.chooseFolder({withPrompt: "Choose where Media Downloader saves videos", defaultLocation: Path(argv[0])}); return folder.toString(); } catch (error) { if (error.errorNumber === -128) return "__CANCELLED__"; throw error; } }',
+    '--',
+    initialDirectory
+  ];
+}
+
+function selectDownloadDirectory(initialDirectory = serverSettings.downloadDirectory) {
+  if (process.platform !== 'darwin') {
+    return Promise.reject(new Error('Native folder selection is currently available on macOS'));
+  }
+
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/osascript', macFolderPickerArgs(initialDirectory), { timeout: 120_000 }, (error, stdout) => {
+      if (error) {
+        reject(new Error(error.killed ? 'Folder selection timed out' : 'Could not open the folder chooser'));
+        return;
+      }
+      const selectedPath = stdout.trim();
+      if (!selectedPath || selectedPath === '__CANCELLED__') {
+        resolve({ cancelled: true });
+        return;
+      }
+      const validation = validateSettings(
+        { ...serverSettings, downloadDirectory: selectedPath },
+        { base: serverSettings, checkFilesystem: true }
+      );
+      if (validation.error) {
+        reject(new Error(validation.error));
+        return;
+      }
+      resolve({ path: validation.settings.downloadDirectory });
+    });
+  });
 }
 
 function cleanHeaderValue(value, maxLength = 2048) {
@@ -141,11 +273,23 @@ function cookiesFromRequestHeader(requestHeaders, url) {
   return cookies;
 }
 
-function buildYtDlpArgs({ url, filename, referer, origin, userAgent, cookieFile, requestHeaders }) {
+function buildYtDlpArgs({
+  url,
+  filename,
+  referer,
+  origin,
+  userAgent,
+  cookieFile,
+  requestHeaders,
+  downloadDirectory = DEFAULT_SETTINGS.downloadDirectory,
+  videoOutput = DEFAULT_SETTINGS.videoOutput,
+  mediaType = 'video',
+  concurrentFragments = DEFAULT_SETTINGS.concurrentFragments
+}) {
   const cleanFilename = safeFilename(filename);
   const outputTemplate = cleanFilename
-    ? path.join(DOWNLOAD_DIR, cleanFilename)
-    : path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s');
+    ? path.join(downloadDirectory, cleanFilename)
+    : path.join(downloadDirectory, '%(title)s.%(ext)s');
 
   const args = [
     '-o', outputTemplate,
@@ -153,11 +297,18 @@ function buildYtDlpArgs({ url, filename, referer, origin, userAgent, cookieFile,
     '--newline',
     '--progress',
     '--progress-delta', '0.5',
-    '--concurrent-fragments', String(CONCURRENT_FRAGMENTS),
+    '--concurrent-fragments', String(concurrentFragments),
     '--retries', '10',
     '--fragment-retries', '10',
     '--socket-timeout', '20'
   ];
+
+  // Prefer H.264 video + AAC audio in an MP4 container for native playback on
+  // macOS, Windows, mobile devices, and browsers. yt-dlp's mp4 preset retains
+  // its own fallback selection when a source lacks the preferred codecs.
+  if (mediaType !== 'audio' && videoOutput === 'compatible-mp4') {
+    args.push('-t', 'mp4');
+  }
 
   const capturedHeaders = normalizeRequestHeaders(requestHeaders);
   const effectiveReferer = capturedHeaders.referer || referer;
@@ -245,6 +396,47 @@ function trimDownloadHistory() {
   }
 }
 
+function clearDownloadHistory(downloadMap, requestedId = null) {
+  if (requestedId !== null) {
+    const download = downloadMap.get(requestedId);
+    if (!download) return { clearedIds: [], reason: 'not_found' };
+    if (isActiveDownload(download)) return { clearedIds: [], reason: 'active' };
+    downloadMap.delete(requestedId);
+    return { clearedIds: [requestedId] };
+  }
+
+  const clearedIds = [];
+  for (const [id, download] of downloadMap) {
+    if (isActiveDownload(download)) continue;
+    downloadMap.delete(id);
+    clearedIds.push(id);
+  }
+  return { clearedIds };
+}
+
+function formatByteSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${unitIndex === 0 ? Math.round(value) : value.toFixed(2)}${units[unitIndex]}`;
+}
+
+function refreshCompletedFileMetadata(download) {
+  const filename = safeFilename(download.filename);
+  if (!filename) return;
+  try {
+    const stats = fs.statSync(path.join(download.downloadDir || DEFAULT_DOWNLOAD_DIR, filename));
+    if (stats.isFile()) download.size = formatByteSize(stats.size);
+  } catch (error) {
+    // The process result remains authoritative if a destination was moved.
+  }
+}
+
 function isAllowedOrigin(origin) {
   return !origin ||
     origin.startsWith('chrome-extension://') ||
@@ -258,6 +450,14 @@ function broadcast(data) {
 }
 
 function parseProgress(line, download) {
+  const errorMatch = line.match(/ERROR:\s*(.+)$/);
+  if (errorMatch) {
+    return {
+      status: 'error',
+      error: errorMatch[1].trim().slice(0, 500)
+    };
+  }
+
   // aria2c progress: [DL:10MiB][#hash ...](+11)
   const aria2Match = line.match(/\[DL:([\d.]+\w+)\]/);
   if (aria2Match && download.totalFragments) {
@@ -423,6 +623,86 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/settings') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(settingsPayload()));
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/settings') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const input = JSON.parse(body || '{}');
+        const candidate = input.reset === true ? { ...DEFAULT_SETTINGS } : input;
+        const validation = validateSettings(candidate, {
+          base: input.reset === true ? DEFAULT_SETTINGS : serverSettings,
+          checkFilesystem: true
+        });
+        if (validation.error) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: validation.error }));
+          return;
+        }
+
+        saveSettings(validation.settings);
+        serverSettings = validation.settings;
+        markActivity();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(settingsPayload()));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message || 'Could not save settings' }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/settings/select-folder') {
+    markActivity();
+    selectDownloadDirectory()
+      .then(result => {
+        if (result.path) {
+          serverSettings = { ...serverSettings, downloadDirectory: result.path };
+          saveSettings(serverSettings);
+          result = { ...settingsPayload(), selected: true };
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      })
+      .catch(error => {
+        res.writeHead(process.platform === 'darwin' ? 500 : 501, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      });
+    return;
+  }
+
+  const clearDownloadMatch = req.method === 'POST'
+    ? req.url.match(/^\/downloads\/clear(?:\/(\d+))?$/)
+    : null;
+  if (clearDownloadMatch) {
+    const requestedId = clearDownloadMatch[1] ? Number(clearDownloadMatch[1]) : null;
+    const result = clearDownloadHistory(downloads, requestedId);
+
+    if (result.reason === 'not_found') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Download history item not found' }));
+      return;
+    }
+    if (result.reason === 'active') {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Active downloads cannot be cleared' }));
+      return;
+    }
+
+    markActivity();
+    broadcast({ type: 'history-cleared', ids: result.clearedIds });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, clearedIds: result.clearedIds }));
+    return;
+  }
+
   // Explicit extension activity resets the idle deadline. Passive health and
   // progress-page polling intentionally do not.
   if (req.method === 'POST' && req.url === '/wake') {
@@ -438,7 +718,7 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
-        const { url, filename, referer, origin, userAgent, cookies, requestHeaders } = JSON.parse(body);
+        const { url, filename, referer, origin, userAgent, cookies, requestHeaders, mediaType } = JSON.parse(body);
 
         if (!isHttpUrl(url)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -458,7 +738,7 @@ const server = http.createServer((req, res) => {
             id: existingDownload.id,
             alreadyRunning: true,
             message: 'Download already running',
-            downloadDir: DOWNLOAD_DIR
+            downloadDir: existingDownload.downloadDir || serverSettings.downloadDirectory
           }));
           return;
         }
@@ -466,6 +746,7 @@ const server = http.createServer((req, res) => {
         trimDownloadHistory();
 
         const id = ++downloadId;
+        const downloadSettings = { ...serverSettings };
         const cleanFilename = safeFilename(filename);
         const download = {
           id,
@@ -477,6 +758,7 @@ const server = http.createServer((req, res) => {
           size: '-',
           fragments: '-',
           filename: cleanFilename || 'Detecting...',
+          downloadDir: downloadSettings.downloadDirectory,
           startTime: Date.now()
         };
         // Keep the signed source URL server-side without retransmitting it on
@@ -503,7 +785,11 @@ const server = http.createServer((req, res) => {
           origin,
           userAgent,
           cookieFile: cookieJar?.file,
-          requestHeaders
+          requestHeaders,
+          downloadDirectory: downloadSettings.downloadDirectory,
+          videoOutput: downloadSettings.videoOutput,
+          mediaType: mediaType === 'audio' ? 'audio' : 'video',
+          concurrentFragments: downloadSettings.concurrentFragments
         });
         const ytdlp = spawn('yt-dlp', args, {
           env: { ...process.env, PYTHONUNBUFFERED: '1' },
@@ -537,6 +823,7 @@ const server = http.createServer((req, res) => {
               if (progress.size) download.size = progress.size;
               if (progress.fragments) download.fragments = progress.fragments;
               if (progress.filename) download.filename = progress.filename;
+              if (progress.error) download.error = progress.error;
               if (progress.status) download.status = progress.status;
               if (progress.time) download.time = progress.time;
 
@@ -573,9 +860,11 @@ const server = http.createServer((req, res) => {
             download.status = 'complete';
             download.percent = 100;
             download.eta = '-';
+            refreshCompletedFileMetadata(download);
             console.log(`✅ [${id}] Download complete!`);
           } else {
             download.status = 'error';
+            download.error = download.error || `yt-dlp exited with code ${code}`;
             console.log(`❌ [${id}] Download failed with code ${code}`);
           }
           markActivity();
@@ -587,7 +876,7 @@ const server = http.createServer((req, res) => {
           success: true,
           id,
           message: 'Download started',
-          downloadDir: DOWNLOAD_DIR
+          downloadDir: download.downloadDir
         }));
 
       } catch (e) {
@@ -631,10 +920,10 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'running',
       service: 'video-downloader',
-      version: '1.3',
-      downloadDir: DOWNLOAD_DIR,
+      version: '1.4',
+      downloadDir: serverSettings.downloadDirectory,
       activeDownloads: Array.from(downloads.values()).filter(isActiveDownload).length,
-      concurrentFragments: CONCURRENT_FRAGMENTS,
+      concurrentFragments: serverSettings.concurrentFragments,
       idleTimeoutMs: IDLE_TIMEOUT_MS,
       idleDeadline: processes.size === 0 ? lastActivityAt + IDLE_TIMEOUT_MS : null
     }));
@@ -760,7 +1049,7 @@ function getUIHTML() {
 <body>
   <div class="container">
     <h1>Video Downloads</h1>
-    <p class="subtitle">Downloads save to ~/Downloads</p>
+    <p class="subtitle">Downloads save to the folder configured in the extension</p>
     <div id="downloads" class="downloads">
       <div class="empty">
         <div class="empty-icon">📭</div>
@@ -838,6 +1127,8 @@ function getUIHTML() {
         data.downloads.forEach(d => downloads.set(d.id, d));
       } else if (data.type === 'new' || data.type === 'progress' || data.type === 'complete') {
         downloads.set(data.download.id, data.download);
+      } else if (data.type === 'history-cleared') {
+        data.ids.forEach(id => downloads.delete(id));
       }
 
       renderDownloads();
@@ -875,7 +1166,7 @@ if (require.main === module) {
 ╠════════════════════════════════════════════╣
 ║  Server:  http://127.0.0.1:${PORT}            ║
 ║  Web UI:  http://127.0.0.1:${PORT}            ║
-║  Downloads: ~/Downloads                    ║
+║  Downloads: configured in extension        ║
 ║  Idle stop: ${Math.round(IDLE_TIMEOUT_MS / 60000)} minutes                       ║
 ║                                            ║
 ║  Press Ctrl+C to stop.                     ║
@@ -885,17 +1176,24 @@ if (require.main === module) {
 }
 
 module.exports = {
+  DEFAULT_SETTINGS,
   buildYtDlpArgs,
+  clearDownloadHistory,
   createCookieJar,
   cookiesFromRequestHeader,
+  formatByteSize,
   isAllowedOrigin,
   isHttpUrl,
+  loadSettings,
+  macFolderPickerArgs,
   parseProgress,
   removeCookieJar,
   safeFilename,
   serializeNetscapeCookies,
+  selectDownloadDirectory,
   shouldExitForInactivity,
   startIdleReaper,
   stopIdleReaper,
+  validateSettings,
   server
 };

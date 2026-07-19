@@ -1,6 +1,6 @@
 {
   "name": "video-downloader-extension",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "A Chromium extension and local yt-dlp server for downloading detected video and audio.",
   "author": "richkapp",
@@ -14,8 +14,8 @@
   },
   "homepage": "https://github.com/richkapp/video-downloader-extension#readme",
   "scripts": {
-    "check": "node --check background.js && node --check popup.js && node --check download-server-v2.js && node --check native-host/native-host.js && node --check native-host/install.js",
-    "test": "node --test tests/download-server-v2.test.js tests/native-host.test.js"
+    "check": "node --check background.js && node --check media-utils.js && node --check popup.js && node --check download-server-v2.js && node --check native-host/native-host.js && node --check native-host/install.js",
+    "test": "node --test tests/download-server-v2.test.js tests/media-utils.test.js tests/native-host.test.js"
   },
   "engines": {
     "node": ">=18"

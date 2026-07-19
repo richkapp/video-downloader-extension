@@ -2,9 +2,18 @@ const HLS_INFO_TIMEOUT_MS = 5000;
 const HLS_INFO_CONCURRENCY = 6;
 const MAX_HLS_INFO_PROBES = 12;
 const MAX_FORWARDED_COOKIES = 200;
+const DOWNLOAD_POLL_INTERVAL_MS = 800;
 const SERVER_BASE_URL = 'http://127.0.0.1:9876';
 const NATIVE_HOST_NAME = 'com.videodownloader.bootstrap';
 let serverStartPromise = null;
+let downloadPollTimer = null;
+let downloadHistoryLimit = 3;
+let currentSettings = {
+  downloadDirectory: '',
+  videoOutput: 'compatible-mp4',
+  concurrentFragments: 8,
+  historyLimit: 3
+};
 
 async function getServerStatus(timeoutMs = 800) {
   const controller = new AbortController();
@@ -71,6 +80,112 @@ function ensureServerRunning(showStatus = false) {
       .finally(() => { serverStartPromise = null; });
   }
   return serverStartPromise;
+}
+
+function compactFolderPath(value) {
+  return String(value || '')
+    .replace(/^\/Users\/[^/]+/, '~')
+    .replace(/^\/home\/[^/]+/, '~');
+}
+
+function renderSettingsForm(payload) {
+  currentSettings = {
+    ...payload.settings,
+    videoOutput: payload.settings.videoOutput || payload.settings.youtubeFormat || 'compatible-mp4'
+  };
+  downloadHistoryLimit = payload.settings.historyLimit;
+  document.getElementById('downloadDirectory').value = payload.settings.downloadDirectory;
+  const directoryDisplay = document.getElementById('downloadDirectoryDisplay');
+  directoryDisplay.textContent = compactFolderPath(payload.settings.downloadDirectory);
+  directoryDisplay.title = payload.settings.downloadDirectory;
+  document.getElementById('videoOutput').value = currentSettings.videoOutput;
+  document.getElementById('concurrentFragments').value = String(payload.settings.concurrentFragments);
+  document.getElementById('historyLimit').value = String(payload.settings.historyLimit);
+}
+
+async function loadSettings() {
+  const response = await fetch(`${SERVER_BASE_URL}/settings`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Settings returned ${response.status}`);
+  const payload = await response.json();
+  renderSettingsForm(payload);
+  return payload.settings;
+}
+
+function setSettingsFeedback(message, kind = '') {
+  const feedback = document.getElementById('settingsFeedback');
+  feedback.textContent = message;
+  feedback.className = `settings-feedback${kind ? ` ${kind}` : ''}`;
+}
+
+async function chooseDownloadDirectory() {
+  const button = document.getElementById('chooseDownloadDirectoryBtn');
+  button.disabled = true;
+  button.textContent = 'Opening chooser…';
+  setSettingsFeedback('Choose a folder in the macOS window.');
+
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/settings/select-folder`, { method: 'POST' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Folder chooser returned ${response.status}`);
+    if (payload.cancelled) {
+      setSettingsFeedback('Folder selection cancelled.');
+      return;
+    }
+    renderSettingsForm(payload);
+    setSettingsFeedback('Download folder changed.', 'success');
+  } catch (error) {
+    setSettingsFeedback(error.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Choose folder…';
+  }
+}
+
+async function saveSettings({ reset = false } = {}) {
+  const saveButton = document.getElementById('saveSettingsBtn');
+  const resetButton = document.getElementById('resetSettingsBtn');
+  saveButton.disabled = true;
+  resetButton.disabled = true;
+  setSettingsFeedback(reset ? 'Restoring defaults…' : 'Saving settings…');
+
+  const body = reset ? { reset: true } : {
+    downloadDirectory: document.getElementById('downloadDirectory').value,
+    videoOutput: document.getElementById('videoOutput').value,
+    concurrentFragments: Number(document.getElementById('concurrentFragments').value),
+    historyLimit: Number(document.getElementById('historyLimit').value)
+  };
+
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Settings returned ${response.status}`);
+    renderSettingsForm(payload);
+    setSettingsFeedback(reset ? 'Defaults restored.' : 'Settings saved.', 'success');
+    if (Array.isArray(window.lastDetectedVideos)) {
+      await displayVideos(window.lastDetectedVideos);
+    }
+    await refreshDownloadProgress();
+  } catch (error) {
+    setSettingsFeedback(error.message, 'error');
+  } finally {
+    saveButton.disabled = false;
+    resetButton.disabled = false;
+  }
+}
+
+function selectPopupTab(tabId, focus = false) {
+  const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+  for (const tab of tabs) {
+    const selected = tab.id === tabId;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+    if (selected && focus) tab.focus();
+  }
 }
 
 function isServerAvailabilityError(error) {
@@ -474,129 +589,261 @@ function formatDuration(seconds) {
   return `${s}s`;
 }
 
+function formatResolution(resolution) {
+  if (!resolution) return '';
+  const value = String(resolution);
+  const dimensions = value.match(/^(\d+)x(\d+)$/);
+  return dimensions ? `${dimensions[2]}p` : value;
+}
+
+function formatBitrate(bitrate) {
+  if (!bitrate) return '';
+  if (bitrate >= 1000000) return `${(bitrate / 1000000).toFixed(1)} Mbps`;
+  return `${Math.round(bitrate / 1000)} kbps`;
+}
+
+function cleanPageTitle(title) {
+  const cleaned = String(title || 'Current tab')
+    .replace(/\s+-\s+YouTube\s*$/i, '')
+    .trim();
+  if (cleaned.length <= 58) return cleaned;
+  return `${cleaned.slice(0, 55)}…`;
+}
+
+function mediaTitle(media, resolution, bitrate) {
+  const type = media.type || (media.mediaType === 'audio' ? 'Audio' : 'Video');
+  if (resolution) return `${resolution} ${type}`;
+  if (media.mediaType === 'audio' && bitrate) return `${bitrate} ${type}`;
+  if (media.hlsInfo?.isPlaylist) return `Adaptive ${type} stream`;
+  return `${type} ${media.mediaType === 'audio' ? 'audio' : 'video'} file`;
+}
+
+function downloadButtonLabel(media, resolution) {
+  const streamKind = media.urlInfo?.streamKind;
+  if (streamKind === 'Video only') {
+    return `Download ${resolution || ''} video only`.replace(/\s+/g, ' ').trim();
+  }
+  if (media.mediaType === 'audio') return `Download ${media.type || 'audio'}`;
+  return `Download ${resolution || media.type || 'this file'}`;
+}
+
+function youtubeDownloadPresentation() {
+  if (currentSettings.videoOutput === 'best-quality') {
+    return {
+      status: 'Primary YouTube video recognized — best available quality ready',
+      quality: 'Best available',
+      kind: 'source format',
+      qualityChip: 'Best quality',
+      formatChip: 'Format may vary',
+      button: 'Download best-quality video',
+      downloading: 'Downloading best quality…',
+      explanation: 'yt-dlp selects the highest available video and audio quality. The final container and codecs may be MP4, WebM, or another source-compatible format.'
+    };
+  }
+  return {
+    status: 'Primary YouTube video recognized — compatible MP4 ready',
+    quality: 'Compatible MP4',
+    kind: 'H.264 + AAC',
+    qualityChip: 'Best compatible quality',
+    formatChip: 'MP4',
+    button: 'Download MP4 video',
+    downloading: 'Downloading compatible MP4…',
+    explanation: 'yt-dlp prefers H.264 video and AAC audio, then merges them into a macOS-compatible MP4 file. The final size appears in download progress.'
+  };
+}
+
+function displayPrimaryYouTubeVideo(tab, pageUrl, elements) {
+  const { statusEl, listEl, listSummaryEl } = elements;
+  const title = cleanPageTitle(tab?.title);
+  const presentation = youtubeDownloadPresentation();
+  const primaryMedia = {
+    downloadMethod: 'server',
+    mediaType: 'video',
+    pageTitle: title,
+    type: 'YouTube',
+    url: pageUrl,
+    urlInfo: {
+      sourceLabel: 'YouTube',
+      streamKind: 'Video + audio'
+    }
+  };
+
+  statusEl.className = 'status found';
+  statusEl.textContent = presentation.status;
+  listSummaryEl.hidden = true;
+  listEl.innerHTML = `
+    <article class="video-item primary-content">
+      <div class="media-card-top">
+        <div class="media-rank primary-marker" aria-label="Primary content">★</div>
+        <div>
+          <h2 class="media-title">${escapeHtml(title)}</h2>
+          <div class="media-subtitle">Primary video from this YouTube page</div>
+          <span class="largest-badge">Recommended download</span>
+        </div>
+        <div class="size-block">
+          <div class="file-size primary-quality">${escapeHtml(presentation.quality)}</div>
+          <div class="size-kind">${escapeHtml(presentation.kind)}</div>
+        </div>
+      </div>
+
+      <div class="media-metadata">
+        <span class="meta-chip quality">${escapeHtml(presentation.qualityChip)}</span>
+        <span class="meta-chip">${escapeHtml(presentation.formatChip)}</span>
+        <span class="meta-chip">Video + audio</span>
+        <span class="meta-chip">Auto-merged</span>
+      </div>
+
+      <button class="download-btn" data-index="0">${escapeHtml(presentation.button)}</button>
+
+      <details class="technical-details">
+        <summary>How this download works</summary>
+        <div class="technical-copy">
+          <div>${escapeHtml(presentation.explanation)}</div>
+          <div class="video-url" title="${escapeHtml(pageUrl)}">${escapeHtml(pageUrl)}</div>
+        </div>
+      </details>
+    </article>
+  `;
+
+  window.currentVideos = [primaryMedia];
+  listEl.querySelector('.download-btn').addEventListener('click', event => {
+    downloadVideo(primaryMedia, event.currentTarget);
+  });
+}
+
 // Display videos and audio in popup
 async function displayVideos(videos) {
+  window.lastDetectedVideos = videos;
   const statusEl = document.getElementById('status');
   const listEl = document.getElementById('videoList');
+  const listSummaryEl = document.getElementById('listSummary');
+  const sizeCoverageEl = document.getElementById('sizeCoverage');
+  const pageContextEl = document.getElementById('pageContext');
 
-  // Filter out tiny segments (likely HLS/DASH segments we don't want individually)
-  const filteredMedia = videos.filter(v => {
-    // Keep if no size info, or if larger than 500KB, or if it's a manifest
-    if (!v.contentLength) return true;
-    if (v.contentLength > 500000) return true;
-    if (v.type === 'HLS' || v.type === 'DASH') return true;
-    // Keep all audio files (they can be small)
-    if (v.mediaType === 'audio') return true;
-    return false;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  pageContextEl.textContent = cleanPageTitle(tab?.title);
+
+  const youtubePageUrl = MediaUtils.getYouTubeVideoPage(tab?.url);
+  if (youtubePageUrl) {
+    displayPrimaryYouTubeVideo(tab, youtubePageUrl, { statusEl, listEl, listSummaryEl });
+    return;
+  }
+
+  // Group repeated requests first so URL metadata can distinguish complete
+  // files from small range responses before tiny fragments are filtered out.
+  const preparedMedia = MediaUtils.dedupeMedia(videos);
+  const uniqueMedia = preparedMedia.filter(media => {
+    if (media.type === 'HLS' || media.type === 'DASH') return true;
+    if (media.mediaType === 'audio') return true;
+    const size = media.totalBytes || media.contentLength;
+    return !size || size > 500000;
   });
 
-  // Count videos and audio separately
-  const videoCount = filteredMedia.filter(m => m.mediaType !== 'audio').length;
-  const audioCount = filteredMedia.filter(m => m.mediaType === 'audio').length;
-
-  if (filteredMedia.length === 0) {
+  if (uniqueMedia.length === 0) {
     statusEl.className = 'status none';
-    statusEl.textContent = 'No media found. Try playing the video/audio first, then click Rescan.';
+    statusEl.textContent = 'No media found. Play the media briefly, then rescan the page.';
+    listSummaryEl.hidden = true;
     listEl.innerHTML = '';
     return;
   }
 
+  const videoCount = uniqueMedia.filter(media => media.mediaType !== 'audio').length;
+  const audioCount = uniqueMedia.filter(media => media.mediaType === 'audio').length;
+  const countParts = [];
+  if (videoCount) countParts.push(`${videoCount} video option${videoCount === 1 ? '' : 's'}`);
+  if (audioCount) countParts.push(`${audioCount} audio option${audioCount === 1 ? '' : 's'}`);
+
   statusEl.className = 'status found';
+  statusEl.textContent = `Found ${countParts.join(' and ')} — checking sizes…`;
+  listSummaryEl.hidden = false;
+  sizeCoverageEl.textContent = 'Checking file sizes…';
 
-  // Build status message
-  let statusParts = [];
-  if (videoCount > 0) statusParts.push(`${videoCount} video${videoCount > 1 ? 's' : ''}`);
-  if (audioCount > 0) statusParts.push(`${audioCount} audio${audioCount > 1 ? ' files' : ''}`);
-  statusEl.textContent = `Found ${statusParts.join(' and ')} - fetching info...`;
-
-  // Fetch duration info for HLS and m3u8 videos
   let hlsProbeCount = 0;
-  const mediaWithInfo = await mapWithConcurrency(filteredMedia, HLS_INFO_CONCURRENCY, async (media) => {
+  const mediaWithInfo = await mapWithConcurrency(uniqueMedia, HLS_INFO_CONCURRENCY, async media => {
     if (media.type === 'HLS' || media.url.includes('.m3u8')) {
       if (hlsProbeCount++ >= MAX_HLS_INFO_PROBES) return media;
       const info = await getHLSDuration(media.url);
-      if (info) media.type = 'HLS'; // Correct the type
-      return { ...media, hlsInfo: info };
+      return { ...media, type: info ? 'HLS' : media.type, hlsInfo: info };
     }
     return media;
   });
 
-  // Sort: master playlists first, then by duration (longest first), then by resolution
-  mediaWithInfo.sort((a, b) => {
-    // Master playlists (best option) first
-    if (a.hlsInfo?.isPlaylist && !b.hlsInfo?.isPlaylist) return -1;
-    if (!a.hlsInfo?.isPlaylist && b.hlsInfo?.isPlaylist) return 1;
-    // Then media playlists with duration
-    if (a.hlsInfo?.duration && !b.hlsInfo?.duration) return -1;
-    if (!a.hlsInfo?.duration && b.hlsInfo?.duration) return 1;
-    // Then by bandwidth (higher = better quality)
-    const aBw = a.hlsInfo?.bandwidth || 0;
-    const bBw = b.hlsInfo?.bandwidth || 0;
-    return bBw - aBw;
-  });
+  const sortedMedia = MediaUtils.sortMediaLargestFirst(mediaWithInfo);
+  const knownSizeCount = sortedMedia.filter(media => MediaUtils.getMediaSize(media)).length;
+  const groupedRequestCount = sortedMedia.reduce(
+    (total, media) => total + Math.max(0, (media.duplicateCount || 1) - 1),
+    0
+  );
 
-  statusEl.textContent = `Found ${statusParts.join(' and ')}!`;
+  statusEl.textContent = `${sortedMedia.length} unique option${sortedMedia.length === 1 ? '' : 's'} — largest to smallest`;
+  sizeCoverageEl.textContent = knownSizeCount === sortedMedia.length
+    ? 'All sizes available'
+    : `${knownSizeCount}/${sortedMedia.length} sizes available`;
 
-  listEl.innerHTML = mediaWithInfo.map((media, index) => {
-    let sizeStr = media.contentLength ? formatSize(media.contentLength) : '';
-    const isAudio = media.mediaType === 'audio';
+  listEl.innerHTML = sortedMedia.map((media, index) => {
+    const sizeBytes = MediaUtils.getMediaSize(media);
+    const isEstimatedSize = Boolean(media.hlsInfo?.estimatedSize) && !media.totalBytes;
+    const resolution = formatResolution(media.hlsInfo?.resolution || media.quality || media.urlInfo?.quality);
+    const duration = media.hlsInfo?.duration || media.duration || media.urlInfo?.duration;
+    const bitrateValue = media.hlsInfo?.bandwidth || media.urlInfo?.bitrate;
+    const bitrate = formatBitrate(bitrateValue);
+    const streamKind = media.urlInfo?.streamKind || (media.mediaType === 'audio' ? 'Audio' : 'Video');
+    const sourceLabel = media.urlInfo?.sourceLabel || 'Detected media';
+    const isLargest = index === 0 && Boolean(sizeBytes);
+    const details = [];
 
-    // Build info badges for HLS
-    let hlsInfoStr = '';
-    let labelStr = '';
-    if (media.hlsInfo) {
-      // Resolution badge
-      if (media.hlsInfo.resolution) {
-        const h = media.hlsInfo.resolution.includes('x')
-          ? media.hlsInfo.resolution.split('x')[1] + 'p'
-          : media.hlsInfo.resolution;
-        hlsInfoStr += `<span class="video-quality">${h}</span>`;
-      }
+    if (media.urlInfo?.itag) details.push(`Format ID ${media.urlInfo.itag}`);
+    if (media.urlInfo?.codec) details.push(`Codec ${media.urlInfo.codec}`);
+    if (media.duplicateCount > 1) details.push(`${media.duplicateCount} repeated requests grouped`);
+    if (media.hlsInfo?.isPlaylist) details.push('Adaptive master playlist');
+    if (media.hlsInfo?.segments) details.push(`${media.hlsInfo.segments} stream segments`);
 
-      if (media.hlsInfo.isPlaylist) {
-        labelStr = 'Master Playlist';
-        if (media.hlsInfo.variants && media.hlsInfo.variants.length > 0) {
-          hlsInfoStr += `<span class="video-segments">${media.hlsInfo.variants.join(', ')}</span>`;
-        }
-      } else if (media.hlsInfo.isMediaPlaylist) {
-        labelStr = 'Direct Stream';
-      }
-
-      if (media.hlsInfo.duration) {
-        hlsInfoStr += `<span class="video-duration">${formatDuration(media.hlsInfo.duration)}</span>`;
-        if (media.hlsInfo.estimatedSize) {
-          sizeStr = `~${formatSize(media.hlsInfo.estimatedSize)}`;
-        }
-      } else if (media.hlsInfo.bandwidth && !media.hlsInfo.resolution) {
-        const mbps = (media.hlsInfo.bandwidth / 1000000).toFixed(1);
-        hlsInfoStr += `<span class="video-quality">${mbps} Mbps</span>`;
-      }
-    }
-
-    // Different styling for audio vs video type badge
-    const typeClass = isAudio ? 'audio-type' : 'video-type';
-    const isRecommended = index === 0 && media.hlsInfo;
+    const metadata = [
+      resolution ? `<span class="meta-chip quality">${escapeHtml(resolution)}</span>` : '',
+      `<span class="meta-chip">${escapeHtml(media.type)}</span>`,
+      duration ? `<span class="meta-chip">${escapeHtml(formatDuration(duration))}</span>` : '',
+      bitrate ? `<span class="meta-chip">${escapeHtml(bitrate)}</span>` : '',
+      `<span class="meta-chip ${streamKind === 'Video only' ? 'warning' : ''}">${escapeHtml(streamKind)}</span>`
+    ].filter(Boolean).join('');
 
     return `
-    <div class="video-item ${isAudio ? 'audio-item' : ''} ${isRecommended ? 'recommended' : ''}">
-      ${isRecommended ? '<div class="recommend-badge">RECOMMENDED</div>' : ''}
-      ${labelStr ? `<div class="stream-label">${labelStr}</div>` : ''}
-      <div class="video-url" title="${escapeHtml(media.url)}">${escapeHtml(truncateUrl(media.url))}</div>
-      <div class="video-info">
-        <span class="${typeClass}">${escapeHtml(media.type)}</span>
-        ${hlsInfoStr}
-        ${sizeStr ? `<span class="video-est-size">${sizeStr}</span>` : ''}
-      </div>
-      <button class="download-btn" data-index="${index}">
-        Download${isRecommended ? ' (Best)' : ''}
-      </button>
-    </div>
-  `}).join('');
+      <article class="video-item ${isLargest ? 'largest-file' : ''}">
+        <div class="media-card-top">
+          <div class="media-rank" aria-label="Rank ${index + 1}">${index + 1}</div>
+          <div>
+            <h2 class="media-title">${escapeHtml(mediaTitle(media, resolution, bitrate))}</h2>
+            <div class="media-subtitle">${escapeHtml(sourceLabel)}</div>
+            ${isLargest ? '<span class="largest-badge">Largest detected file</span>' : ''}
+          </div>
+          <div class="size-block">
+            <div class="file-size ${sizeBytes ? '' : 'unknown'}">${sizeBytes ? escapeHtml(formatSize(sizeBytes)) : 'Unknown'}</div>
+            <div class="size-kind">${sizeBytes ? (isEstimatedSize ? 'Estimated size' : 'File size') : 'Size unavailable'}</div>
+          </div>
+        </div>
 
-  // Store media for download handler
-  window.currentVideos = mediaWithInfo;
+        <div class="media-metadata">${metadata}</div>
 
-  // Add click handlers
+        <button class="download-btn" data-index="${index}">
+          ${escapeHtml(downloadButtonLabel(media, resolution))}
+        </button>
+
+        <details class="technical-details">
+          <summary>Technical details</summary>
+          <div class="technical-copy">
+            ${details.length ? `<div>${escapeHtml(details.join(' · '))}</div>` : ''}
+            <div class="video-url" title="${escapeHtml(media.url)}">${escapeHtml(media.url)}</div>
+          </div>
+        </details>
+      </article>
+    `;
+  }).join('');
+
+  if (groupedRequestCount > 0) {
+    statusEl.textContent += ` · ${groupedRequestCount} repeat${groupedRequestCount === 1 ? '' : 's'} grouped`;
+  }
+
+  window.currentVideos = sortedMedia;
+
   listEl.querySelectorAll('.download-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const index = parseInt(btn.dataset.index);
@@ -605,15 +852,211 @@ async function displayVideos(videos) {
   });
 }
 
-function truncateUrl(url) {
-  if (url.length <= 60) return url;
-  return url.substring(0, 30) + '...' + url.substring(url.length - 27);
-}
-
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function isActiveDownloadStatus(status) {
+  return MediaUtils.isActiveDownloadStatus(status);
+}
+
+function downloadStatusLabel(status) {
+  const labels = {
+    starting: 'Preparing',
+    downloading: 'Downloading',
+    merging: 'Merging',
+    finalizing: 'Finalizing',
+    complete: 'Complete',
+    error: 'Failed',
+    stopped: 'Stopped'
+  };
+  return labels[status] || 'Unknown';
+}
+
+function downloadStatusClass(status) {
+  if (isActiveDownloadStatus(status)) return 'active';
+  if (status === 'complete') return 'complete';
+  if (status === 'error') return 'error';
+  if (status === 'stopped') return 'stopped';
+  return '';
+}
+
+function syncPrimaryDownloadButton(downloads) {
+  const primaryVideo = window.currentVideos?.find(video => video.downloadMethod === 'server');
+  const primaryButton = document.querySelector('.primary-content .download-btn');
+  if (!primaryVideo || !primaryButton) return;
+
+  const activeDownload = downloads.find(download => (
+    isActiveDownloadStatus(download.status) && download.url === primaryVideo.url
+  ));
+
+  if (activeDownload) {
+    const percent = MediaUtils.normalizedDownloadPercent(activeDownload);
+    primaryButton.disabled = true;
+    primaryButton.classList.add('is-downloading');
+    primaryButton.textContent = `${downloadStatusLabel(activeDownload.status)}${percent > 0 ? ` ${percent.toFixed(1)}%` : '…'}`;
+    return;
+  }
+
+  if (primaryButton.classList.contains('is-downloading')) {
+    primaryButton.disabled = false;
+    primaryButton.classList.remove('is-downloading');
+    primaryButton.textContent = youtubeDownloadPresentation().button;
+  }
+}
+
+function renderDownloadProgress(downloads) {
+  const panelEl = document.getElementById('downloadPanel');
+  const itemsEl = document.getElementById('downloadItems');
+  const summaryEl = document.getElementById('downloadPanelSummary');
+  const modeEl = document.getElementById('downloadPanelMode');
+  const clearHistoryButton = document.getElementById('clearHistoryBtn');
+  const visibleDownloads = MediaUtils.sortDownloadsForDisplay(downloads, downloadHistoryLimit);
+
+  syncPrimaryDownloadButton(downloads);
+
+  if (visibleDownloads.length === 0) {
+    panelEl.hidden = true;
+    panelEl.dataset.hasData = '';
+    document.body.classList.remove('downloads-visible');
+    clearHistoryButton.hidden = true;
+    return;
+  }
+
+  const activeCount = downloads.filter(download => isActiveDownloadStatus(download.status)).length;
+  const recentCount = Math.max(0, downloads.length - activeCount);
+  panelEl.hidden = false;
+  panelEl.dataset.hasData = 'true';
+  document.body.classList.add('downloads-visible');
+  summaryEl.textContent = activeCount
+    ? `${activeCount} active${recentCount ? ` · ${recentCount} recent` : ''}`
+    : `${recentCount} recent download${recentCount === 1 ? '' : 's'}`;
+  modeEl.lastChild.textContent = activeCount ? 'Live' : 'Recent';
+  clearHistoryButton.hidden = recentCount === 0;
+
+  itemsEl.innerHTML = visibleDownloads.map(download => {
+    const percent = MediaUtils.normalizedDownloadPercent(download);
+    const status = download.status || 'unknown';
+    const statusClass = downloadStatusClass(status);
+    const active = isActiveDownloadStatus(status);
+    const stats = [];
+
+    if (download.size && download.size !== '-') stats.push(`Size ${download.size}`);
+    if (download.speed && download.speed !== '-') stats.push(`Speed ${download.speed}`);
+    if (download.eta && download.eta !== '-') stats.push(`ETA ${download.eta}`);
+    if (download.fragments && download.fragments !== '-') stats.push(`Fragments ${download.fragments}`);
+    if (status === 'complete') {
+      stats.push(`Saved to ${compactFolderPath(download.downloadDir || currentSettings.downloadDirectory || 'configured folder')}`);
+    }
+
+    const errorMessage = status === 'error'
+      ? download.error || 'The download failed before the final file could be created.'
+      : status === 'stopped'
+        ? 'Download stopped.'
+        : '';
+
+    return `
+      <article class="download-progress-item">
+        <div class="download-progress-header">
+          <div class="download-filename" title="${escapeHtml(download.filename || 'Detecting filename…')}">
+            ${escapeHtml(download.filename || 'Detecting filename…')}
+          </div>
+          <div class="download-item-actions">
+            <span class="download-status ${statusClass}">${escapeHtml(downloadStatusLabel(status))}</span>
+            ${active ? '' : `
+              <button
+                class="remove-download-btn"
+                type="button"
+                data-download-id="${download.id}"
+                aria-label="Remove ${escapeHtml(download.filename || 'download')} from progress history"
+                title="Remove from progress history; the downloaded file stays in Downloads"
+              >Clear</button>
+            `}
+          </div>
+        </div>
+        <div class="progress-row">
+          <div
+            class="progress-track"
+            role="progressbar"
+            aria-label="${escapeHtml(download.filename || 'Download progress')}"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="${percent.toFixed(1)}"
+          >
+            <div class="progress-fill ${statusClass}" style="width: ${percent.toFixed(1)}%"></div>
+          </div>
+          <span class="progress-percent">${status === 'starting' && percent === 0 ? 'Starting' : `${percent.toFixed(1)}%`}</span>
+        </div>
+        ${stats.length ? `<div class="download-stats">${stats.map(stat => `<span>${escapeHtml(stat)}</span>`).join('')}</div>` : ''}
+        ${errorMessage ? `<div class="download-error">${escapeHtml(errorMessage)}</div>` : ''}
+        ${active ? `<button class="stop-download-btn" data-download-id="${download.id}">Stop download</button>` : ''}
+      </article>
+    `;
+  }).join('');
+
+  itemsEl.querySelectorAll('.stop-download-btn').forEach(button => {
+    button.addEventListener('click', () => stopDownload(Number(button.dataset.downloadId), button));
+  });
+  itemsEl.querySelectorAll('.remove-download-btn').forEach(button => {
+    button.addEventListener('click', () => clearDownloadHistory(Number(button.dataset.downloadId), button));
+  });
+}
+
+async function refreshDownloadProgress() {
+  const panelEl = document.getElementById('downloadPanel');
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/downloads`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Download status returned ${response.status}`);
+    const downloads = await response.json();
+    renderDownloadProgress(Array.isArray(downloads) ? downloads : []);
+    return downloads;
+  } catch (error) {
+    if (!panelEl.dataset.hasData) {
+      panelEl.hidden = true;
+      document.body.classList.remove('downloads-visible');
+    }
+    return [];
+  }
+}
+
+function startDownloadPolling() {
+  if (downloadPollTimer) clearInterval(downloadPollTimer);
+  downloadPollTimer = setInterval(() => {
+    void refreshDownloadProgress();
+  }, DOWNLOAD_POLL_INTERVAL_MS);
+}
+
+async function stopDownload(id, button) {
+  button.disabled = true;
+  button.textContent = 'Stopping…';
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/stop/${id}`, { method: 'POST' });
+    if (!response.ok) throw new Error(`Stop request returned ${response.status}`);
+    await refreshDownloadProgress();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Retry stop';
+  }
+}
+
+async function clearDownloadHistory(id = null, button = null) {
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Clearing…';
+  }
+  try {
+    const suffix = id === null ? '' : `/${id}`;
+    const response = await fetch(`${SERVER_BASE_URL}/downloads/clear${suffix}`, { method: 'POST' });
+    if (!response.ok) throw new Error(`Clear request returned ${response.status}`);
+    await refreshDownloadProgress();
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = id === null ? 'Retry clear' : 'Retry';
+    }
+  }
 }
 
 async function sendToDownloadServer(media) {
@@ -643,7 +1086,8 @@ async function sendToDownloadServer(media) {
       origin,
       userAgent: navigator.userAgent,
       cookies,
-      requestHeaders: media.requestHeaders || null
+      requestHeaders: media.requestHeaders || null,
+      mediaType: media.mediaType || 'video'
     })
   });
 
@@ -665,11 +1109,12 @@ async function downloadHLS(media, btn) {
   try {
     statusEl.textContent = 'Sending to download server...';
     await sendToDownloadServer(media);
+    await refreshDownloadProgress();
 
-    statusEl.textContent = `Downloading via yt-dlp... Check server UI at ${SERVER_BASE_URL}`;
+    statusEl.textContent = 'Downloading via yt-dlp — follow progress below';
     if (btn) {
       btn.textContent = 'Downloading...';
-      btn.style.background = '#22c55e';
+      btn.classList.add('is-downloading');
     }
 
   } catch (e) {
@@ -698,6 +1143,30 @@ async function downloadVideo(media, btn) {
   const isDASH = media.type === 'DASH' || /\.mpd(?:[?#]|$)/i.test(media.url);
 
   try {
+    if (media.downloadMethod === 'server') {
+      try {
+        await sendToDownloadServer(media);
+        await refreshDownloadProgress();
+        if (btn) {
+          btn.textContent = youtubeDownloadPresentation().downloading;
+          btn.classList.add('is-downloading');
+        }
+        showNotification('Primary video download started — follow progress below');
+        return;
+      } catch (error) {
+        if (isServerAvailabilityError(error)) {
+          showServerInstructions(media.url);
+        } else {
+          showNotification(`Download failed: ${error.message}`);
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = youtubeDownloadPresentation().button;
+        }
+        return;
+      }
+    }
+
     // Streaming manifests are downloaded by the local server.
     if (isHLS) {
       await downloadHLS(media, btn);
@@ -707,11 +1176,12 @@ async function downloadVideo(media, btn) {
     if (isDASH) {
       try {
         await sendToDownloadServer(media);
+        await refreshDownloadProgress();
         if (btn) {
           btn.textContent = 'Downloading...';
-          btn.style.background = '#22c55e';
+          btn.classList.add('is-downloading');
         }
-        showNotification('Download started! Check ~/Downloads');
+        showNotification('Download started — follow progress below');
         return;
       } catch (e) {
         if (isServerAvailabilityError(e)) {
@@ -744,7 +1214,7 @@ async function downloadVideo(media, btn) {
       } else {
         if (btn) {
           btn.textContent = 'Started!';
-          btn.style.background = '#22c55e';
+          btn.classList.add('is-downloading');
         }
       }
     });
@@ -829,14 +1299,33 @@ function getFilename(url, type, isAudio = false) {
 // Initialize
 async function init() {
   const statusEl = document.getElementById('status');
+  if (downloadPollTimer) {
+    clearInterval(downloadPollTimer);
+    downloadPollTimer = null;
+  }
   statusEl.className = 'status scanning';
   statusEl.textContent = 'Starting server and scanning for videos...';
 
-  const [, videos] = await Promise.all([
+  const [startup, videos] = await Promise.all([
     ensureServerRunning(true),
     findAllVideos()
   ]);
-  displayVideos(videos);
+
+  if (startup.success) {
+    try {
+      await loadSettings();
+    } catch (error) {
+      setSettingsFeedback('Settings are temporarily unavailable.', 'error');
+    }
+  } else {
+    setSettingsFeedback('Start the download server before changing settings.', 'error');
+  }
+  await displayVideos(videos);
+
+  if (startup.success) {
+    await refreshDownloadProgress();
+    startDownloadPolling();
+  }
 }
 
 // Refresh button
@@ -847,6 +1336,40 @@ document.getElementById('clearBtn')?.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   chrome.runtime.sendMessage({ type: 'clearVideos', tabId: tab.id });
   init();
+});
+
+document.getElementById('clearHistoryBtn')?.addEventListener('click', event => {
+  clearDownloadHistory(null, event.currentTarget);
+});
+
+document.getElementById('chooseDownloadDirectoryBtn')?.addEventListener('click', () => {
+  void chooseDownloadDirectory();
+});
+
+document.getElementById('settingsForm')?.addEventListener('submit', event => {
+  event.preventDefault();
+  void saveSettings();
+});
+
+document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {
+  void saveSettings({ reset: true });
+});
+
+document.querySelectorAll('[role="tab"]').forEach(tab => {
+  tab.addEventListener('click', () => selectPopupTab(tab.id));
+  tab.addEventListener('keydown', event => {
+    const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+    const currentIndex = tabs.indexOf(event.currentTarget);
+    let nextIndex = null;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+    if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = tabs.length - 1;
+    if (nextIndex !== null) {
+      event.preventDefault();
+      selectPopupTab(tabs[nextIndex].id, true);
+    }
+  });
 });
 
 // Start scanning
