@@ -1,3 +1,5 @@
+importScripts('media-utils.js');
+
 // Store detected video URLs per tab
 const videosByTab = new Map();
 const requestContextByTab = new Map();
@@ -271,10 +273,10 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (contentType && contentType.value) {
       const type = contentType.value.toLowerCase();
 
-      // Get content length if available
-      const contentLength = details.responseHeaders?.find(
-        h => h.name.toLowerCase() === 'content-length'
-      );
+      // Prefer the total from Content-Range or Google's stored-length header.
+      // Content-Length alone can describe only one ranged response chunk.
+      const sizeInfo = MediaUtils.getResponseSizeInfo(details.responseHeaders, details.statusCode);
+      const contentLength = sizeInfo.bytes;
 
       // Check for video content types
       if (type.includes('video/') ||
@@ -296,7 +298,8 @@ chrome.webRequest.onHeadersReceived.addListener(
           mediaType: 'video',
           source: 'network (content-type)',
           timestamp: Date.now(),
-          contentLength: contentLength ? parseInt(contentLength.value) : null,
+          contentLength,
+          contentLengthIsTotal: sizeInfo.isTotal,
           requestHeaders: getRequestContext(tabId, url)
         });
       }
@@ -324,7 +327,8 @@ chrome.webRequest.onHeadersReceived.addListener(
           mediaType: 'audio',
           source: 'network (content-type)',
           timestamp: Date.now(),
-          contentLength: contentLength ? parseInt(contentLength.value) : null,
+          contentLength,
+          contentLengthIsTotal: sizeInfo.isTotal,
           requestHeaders: getRequestContext(tabId, url)
         });
       }

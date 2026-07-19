@@ -1,225 +1,956 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Downloader</title>
   <style>
+    :root {
+      color-scheme: dark;
+      --color-surface-base: #0b1020;
+      --color-surface-card: #141b2f;
+      --color-surface-raised: #1b2540;
+      --color-border: #2b3858;
+      --color-border-strong: #50658f;
+      --color-content: #eef2ff;
+      --color-content-secondary: #b7c0d6;
+      --color-content-muted: #8e9ab5;
+      --color-accent: #5dd6f7;
+      --color-accent-hover: #82e3fa;
+      --color-accent-ink: #071119;
+      --color-success: #54d68c;
+      --color-success-surface: #15382a;
+      --color-warning: #f3c969;
+      --color-warning-surface: #342d1b;
+      --color-danger: #fb8b95;
+      --color-danger-surface: #3b2028;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+    }
+
     * {
       box-sizing: border-box;
     }
+
     body {
-      width: 400px;
-      min-height: 200px;
-      max-height: 500px;
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 460px;
+      min-height: 240px;
+      max-height: 600px;
+      padding: var(--space-4);
       margin: 0;
-      background: #1a1a2e;
-      color: #eee;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--color-surface-base);
+      color: var(--color-content);
+      font-size: 16px;
+      line-height: 1.5;
     }
-    h1 {
-      font-size: 18px;
-      margin: 0 0 16px 0;
+
+    button,
+    summary {
+      font: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .app-header {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-start;
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
     }
-    h1::before {
-      content: "▶";
-      color: #00d4ff;
+
+    .popup-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-1);
+      padding: var(--space-1);
+      margin-bottom: var(--space-3);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-surface-card);
     }
-    .status {
-      padding: 12px;
-      border-radius: 8px;
-      margin-bottom: 16px;
+
+    .popup-tab {
+      min-height: 44px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-content-muted);
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .popup-tab[aria-selected="true"] {
+      background: var(--color-surface-raised);
+      color: var(--color-content);
+    }
+
+    .settings-view {
+      max-height: 430px;
+      padding-right: var(--space-1);
+      overflow-y: auto;
+      scrollbar-color: var(--color-border-strong) transparent;
+      scrollbar-width: thin;
+    }
+
+    .settings-intro {
+      margin-bottom: var(--space-3);
+    }
+
+    .settings-intro h2 {
+      margin: 0;
+      color: var(--color-content);
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .settings-intro p {
+      margin: var(--space-1) 0 0;
+      color: var(--color-content-muted);
+      font-size: 12px;
+    }
+
+    .settings-card {
+      display: grid;
+      gap: var(--space-4);
+      padding: var(--space-4);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-surface-card);
+    }
+
+    .setting-field {
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .setting-label {
+      color: var(--color-content);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .setting-help {
+      margin: 0;
+      color: var(--color-content-muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .setting-control {
+      min-height: 44px;
+      width: 100%;
+      padding: 0 var(--space-3);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-md);
+      background: var(--color-surface-base);
+      color: var(--color-content);
       font-size: 13px;
     }
-    .status.scanning {
-      background: #2a2a4a;
-      color: #aaa;
+
+    .setting-control::placeholder {
+      color: var(--color-content-muted);
     }
+
+    .folder-picker {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-2);
+    }
+
+    .folder-path {
+      display: flex;
+      min-height: 44px;
+      min-width: 0;
+      padding: 0 var(--space-3);
+      align-items: center;
+      overflow: hidden;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-surface-base);
+      color: var(--color-content-secondary);
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .folder-picker-button {
+      min-height: 44px;
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-md);
+      background: var(--color-surface-raised);
+      color: var(--color-content);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .folder-picker-button:disabled {
+      color: var(--color-content-muted);
+      cursor: wait;
+    }
+
+    .settings-note {
+      padding: var(--space-3);
+      border-radius: var(--radius-md);
+      background: var(--color-surface-raised);
+      color: var(--color-content-secondary);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .settings-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2);
+    }
+
+    .settings-button {
+      min-height: 44px;
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-md);
+      background: transparent;
+      color: var(--color-content-secondary);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .settings-button.primary {
+      border-color: var(--color-accent);
+      background: var(--color-accent);
+      color: var(--color-accent-ink);
+    }
+
+    .settings-button:disabled {
+      opacity: 0.65;
+      cursor: wait;
+    }
+
+    .settings-feedback {
+      min-height: 20px;
+      margin: 0;
+      color: var(--color-content-muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .settings-feedback.success {
+      color: #a8f0c4;
+    }
+
+    .settings-feedback.error {
+      color: #ffc0c5;
+    }
+
+    .app-mark {
+      display: grid;
+      flex: 0 0 auto;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border-radius: var(--radius-md);
+      background: var(--color-accent);
+      color: var(--color-accent-ink);
+      font-size: 15px;
+    }
+
+    .app-heading {
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 720;
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+    }
+
+    .page-context {
+      max-width: 370px;
+      margin-top: 2px;
+      overflow: hidden;
+      color: var(--color-content-secondary);
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status {
+      padding: 10px var(--space-3);
+      margin-bottom: var(--space-3);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-surface-raised);
+      color: var(--color-content-secondary);
+      font-size: 13px;
+    }
+
     .status.found {
-      background: #1a3a2a;
-      color: #4ade80;
+      border-color: #2f7652;
+      background: var(--color-success-surface);
+      color: #a8f0c4;
     }
+
     .status.none {
-      background: #3a2a2a;
-      color: #f87171;
+      border-color: #864454;
+      background: var(--color-danger-surface);
+      color: #ffc0c5;
     }
+
+    .list-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin: 0 2px var(--space-2);
+      color: var(--color-content-muted);
+      font-size: 12px;
+    }
+
+    .list-summary[hidden] {
+      display: none;
+    }
+
+    .sort-label {
+      color: var(--color-content-secondary);
+      font-weight: 650;
+    }
+
     .video-list {
-      max-height: 350px;
+      max-height: 340px;
+      padding-right: var(--space-1);
       overflow-y: auto;
+      scrollbar-color: var(--color-border-strong) transparent;
+      scrollbar-width: thin;
     }
+
     .video-item {
-      background: #2a2a4a;
-      border-radius: 8px;
-      padding: 12px;
-      margin-bottom: 10px;
+      padding: var(--space-3);
+      margin-bottom: var(--space-3);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-surface-card);
     }
+
     .video-item:last-child {
       margin-bottom: 0;
     }
-    .video-url {
-      font-size: 11px;
-      color: #888;
-      word-break: break-all;
-      margin-bottom: 8px;
-      max-height: 40px;
-      overflow: hidden;
+
+    .video-item.largest-file {
+      border-color: #3a8fac;
+      box-shadow: inset 3px 0 0 var(--color-accent);
     }
-    .video-info {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 10px;
+
+    .video-item.primary-content {
+      border-color: #2f7652;
+      box-shadow: inset 3px 0 0 var(--color-success);
     }
-    .video-type {
-      background: #00d4ff;
-      color: #000;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
+
+    .media-card-top {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: start;
     }
-    .video-size {
+
+    .media-rank {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--color-surface-raised);
+      color: var(--color-content-secondary);
       font-size: 12px;
-      color: #aaa;
+      font-weight: 700;
     }
-    .download-btn {
-      width: 100%;
-      padding: 10px;
-      background: linear-gradient(135deg, #00d4ff, #0099cc);
-      color: #000;
-      border: none;
-      border-radius: 6px;
+
+    .media-rank.primary-marker {
+      background: var(--color-success-surface);
+      color: #a8f0c4;
+    }
+
+    .media-title {
+      margin: 0;
+      color: var(--color-content);
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .media-subtitle {
+      margin-top: 2px;
+      color: var(--color-content-secondary);
+      font-size: 13px;
+    }
+
+    .size-block {
+      min-width: 88px;
+      text-align: right;
+    }
+
+    .file-size {
+      color: var(--color-content);
+      font-size: 16px;
+      font-weight: 730;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .file-size.unknown {
+      color: var(--color-content-muted);
       font-size: 13px;
       font-weight: 600;
+    }
+
+    .file-size.primary-quality {
+      color: #a8f0c4;
+      font-size: 14px;
+    }
+
+    .size-kind {
+      margin-top: 2px;
+      color: var(--color-content-muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .largest-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px var(--space-2);
+      margin-top: var(--space-2);
+      border-radius: 999px;
+      background: #193e4d;
+      color: #9ae9fb;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .media-metadata {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: var(--space-3) 0;
+    }
+
+    .meta-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: 999px;
+      background: var(--color-surface-raised);
+      color: var(--color-content-secondary);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .meta-chip.quality {
+      border-color: #416a96;
+      background: #1a314c;
+      color: #b9dcff;
+    }
+
+    .meta-chip.warning {
+      border-color: #765f2a;
+      background: var(--color-warning-surface);
+      color: #ffe19a;
+    }
+
+    .download-btn {
+      width: 100%;
+      min-height: 44px;
+      padding: 10px var(--space-4);
+      border: 0;
+      border-radius: var(--radius-md);
+      background: var(--color-accent);
+      color: var(--color-accent-ink);
+      font-size: 14px;
+      font-weight: 700;
       cursor: pointer;
-      transition: opacity 0.2s;
     }
+
     .download-btn:hover {
-      opacity: 0.9;
+      background: var(--color-accent-hover);
     }
+
     .download-btn:disabled {
-      background: #444;
-      color: #888;
+      background: #35415d;
+      color: #8490aa;
       cursor: not-allowed;
     }
-    .refresh-btn {
-      width: 100%;
-      padding: 8px;
-      background: transparent;
-      color: #00d4ff;
-      border: 1px solid #00d4ff;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      margin-top: 12px;
+
+    .download-btn.is-downloading,
+    .download-btn.is-downloading:disabled {
+      background: var(--color-success);
+      color: var(--color-accent-ink);
     }
-    .refresh-btn:hover {
-      background: rgba(0, 212, 255, 0.1);
+
+    .download-panel {
+      padding: var(--space-3);
+      margin-bottom: var(--space-3);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-lg);
+      background: var(--color-surface-raised);
     }
-    .tip {
+
+    .download-panel[hidden] {
+      display: none;
+    }
+
+    .download-panel-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-2);
+    }
+
+    .download-panel-title {
+      margin: 0;
+      color: var(--color-content);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .download-panel-summary {
+      color: var(--color-content-muted);
       font-size: 11px;
-      color: #666;
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid #333;
+    }
+
+    .live-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #a8f0c4;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--color-success);
+    }
+
+    .download-panel-tools,
+    .download-item-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-2);
+    }
+
+    .clear-history-btn,
+    .remove-download-btn {
+      min-height: 44px;
+      padding: var(--space-2);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--color-surface-base);
+      color: var(--color-content-secondary);
+      font-size: 11px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .clear-history-btn:hover,
+    .remove-download-btn:hover {
+      border-color: var(--color-accent);
+      color: var(--color-content);
+    }
+
+    .clear-history-btn:disabled,
+    .remove-download-btn:disabled {
+      color: var(--color-content-muted);
+      cursor: wait;
+    }
+
+    .download-items {
+      max-height: 205px;
+      overflow-y: auto;
+      scrollbar-color: var(--color-border-strong) transparent;
+      scrollbar-width: thin;
+    }
+
+    .download-progress-item {
+      padding: var(--space-3) 0;
+      border-top: 1px solid var(--color-border);
+    }
+
+    .download-progress-item:first-child {
+      padding-top: var(--space-1);
+      border-top: 0;
+    }
+
+    .download-progress-item:last-child {
+      padding-bottom: var(--space-1);
+    }
+
+    .download-progress-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: start;
+      margin-bottom: var(--space-2);
+    }
+
+    .download-filename {
+      display: -webkit-box;
+      overflow: hidden;
+      color: var(--color-content);
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.35;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .download-status {
+      padding: 2px var(--space-2);
+      border-radius: 999px;
+      color: var(--color-content-secondary);
+      background: var(--color-surface-card);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .download-status.active {
+      color: #b9dcff;
+      background: #1a314c;
+    }
+
+    .download-status.complete {
+      color: #a8f0c4;
+      background: var(--color-success-surface);
+    }
+
+    .download-status.error,
+    .download-status.stopped {
+      color: #ffc0c5;
+      background: var(--color-danger-surface);
+    }
+
+    .progress-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: center;
+    }
+
+    .progress-track {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--color-surface-base);
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: var(--color-accent);
+      transition: width 0.3s ease;
+    }
+
+    .progress-fill.complete {
+      background: var(--color-success);
+    }
+
+    .progress-fill.error,
+    .progress-fill.stopped {
+      background: var(--color-danger);
+    }
+
+    .progress-percent {
+      min-width: 42px;
+      color: var(--color-content);
+      font-size: 12px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .download-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-1) var(--space-3);
+      margin-top: var(--space-2);
+      color: var(--color-content-muted);
+      font-size: 11px;
+    }
+
+    .download-error {
+      margin-top: var(--space-2);
+      color: #ffc0c5;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .stop-download-btn {
+      min-height: 44px;
+      width: 100%;
+      padding: var(--space-2) var(--space-3);
+      margin-top: var(--space-2);
+      border: 1px solid var(--color-danger);
+      border-radius: var(--radius-md);
+      background: transparent;
+      color: #ffb4bc;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .stop-download-btn:hover {
+      border-color: var(--color-danger);
+      background: var(--color-danger-surface);
+    }
+
+    .stop-download-btn:disabled {
+      color: var(--color-content-muted);
+      cursor: wait;
+    }
+
+    body.downloads-visible .video-list {
+      max-height: 190px;
+    }
+
+    .technical-details {
+      margin-top: var(--space-2);
+      color: var(--color-content-muted);
+      font-size: 11px;
+    }
+
+    .technical-details summary {
+      display: flex;
+      min-height: 44px;
+      align-items: center;
+      width: max-content;
+      max-width: 100%;
+      color: var(--color-content-secondary);
+      cursor: pointer;
+    }
+
+    .technical-details summary:hover {
+      color: var(--color-content);
+    }
+
+    .technical-copy {
+      padding: 0 0 var(--space-2);
+      line-height: 1.55;
+    }
+
+    .video-url {
+      display: -webkit-box;
+      margin-top: var(--space-1);
+      overflow: hidden;
+      color: var(--color-content-muted);
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .popup-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2);
+      padding-top: var(--space-3);
+    }
+
+    .refresh-btn {
+      min-height: 44px;
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-md);
+      background: transparent;
+      color: var(--color-content-secondary);
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .refresh-btn:hover {
+      border-color: var(--color-accent);
+      background: #142b3b;
+      color: var(--color-content);
+    }
+
+    .refresh-btn.danger {
+      color: #ffb4bc;
+    }
+
+    .refresh-btn.danger:hover {
+      border-color: var(--color-danger);
+      background: var(--color-danger-surface);
+    }
+
+    .tip {
+      margin-top: var(--space-3);
+      color: var(--color-content-muted);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    .server-instructions {
+      padding: var(--space-4);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-surface-card);
+      color: var(--color-content-secondary);
+      font-size: 13px;
+    }
+
+    .server-instructions code {
+      display: block;
+      padding: 10px;
+      margin-top: var(--space-2);
+      border-radius: var(--radius-sm);
+      background: var(--color-surface-base);
+      color: var(--color-accent);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
     }
   </style>
 </head>
 <body>
-  <h1>Media Downloader</h1>
-  <div id="status" class="status scanning">Scanning page for media...</div>
-  <div id="videoList" class="video-list"></div>
-  <button id="refreshBtn" class="refresh-btn">Rescan Page</button>
-  <button id="clearBtn" class="refresh-btn" style="margin-top: 6px; color: #f87171; border-color: #f87171;">Clear & Rescan</button>
-  <div class="tip">
-    Tip: Play the video/audio first, then click Rescan. The extension monitors network requests to find media streams.
+  <header class="app-header">
+    <div class="app-mark" aria-hidden="true">▶</div>
+    <div class="app-heading">
+      <h1>Media Downloader</h1>
+      <div id="pageContext" class="page-context">Current tab</div>
+    </div>
+  </header>
+
+  <nav class="popup-tabs" role="tablist" aria-label="Extension sections">
+    <button id="downloadsTab" class="popup-tab" type="button" role="tab" aria-selected="true" aria-controls="downloadsView">Downloads</button>
+    <button id="settingsTab" class="popup-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsView" tabindex="-1">Settings</button>
+  </nav>
+
+  <main id="downloadsView" role="tabpanel" aria-labelledby="downloadsTab">
+
+  <div id="status" class="status scanning" role="status" aria-live="polite">
+    Scanning page for media…
   </div>
-  <style>
-    .server-instructions {
-      background: #2a2a4a;
-      border-radius: 8px;
-      padding: 16px;
-      font-size: 13px;
-    }
-    .server-instructions code {
-      display: block;
-      background: #1a1a2e;
-      padding: 10px;
-      border-radius: 4px;
-      margin-top: 8px;
-      font-size: 11px;
-      word-break: break-all;
-      color: #00d4ff;
-    }
-    .video-duration {
-      background: #22c55e;
-      color: #000;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-    .video-segments {
-      color: #888;
-      font-size: 11px;
-    }
-    .video-quality {
-      background: #8b5cf6;
-      color: #fff;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-    .video-est-size {
-      background: #f59e0b;
-      color: #000;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-    .audio-type {
-      background: #a855f7;
-      color: #fff;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-    .audio-item {
-      border-left: 3px solid #a855f7;
-    }
-    .audio-item .download-btn {
-      background: linear-gradient(135deg, #a855f7, #7c3aed);
-    }
-    .recommended {
-      border: 1px solid #22c55e;
-      position: relative;
-    }
-    .recommend-badge {
-      background: #22c55e;
-      color: #000;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 4px;
-      display: inline-block;
-      margin-bottom: 6px;
-      letter-spacing: 0.5px;
-    }
-    .stream-label {
-      font-size: 11px;
-      color: #aaa;
-      margin-bottom: 4px;
-      font-weight: 500;
-    }
-    .recommended .download-btn {
-      background: linear-gradient(135deg, #22c55e, #16a34a);
-    }
-  </style>
+
+  <section id="downloadPanel" class="download-panel" aria-labelledby="downloadPanelTitle" hidden>
+    <div class="download-panel-header">
+      <div>
+        <h2 id="downloadPanelTitle" class="download-panel-title">Download progress</h2>
+        <div id="downloadPanelSummary" class="download-panel-summary">Checking downloads…</div>
+      </div>
+      <div class="download-panel-tools">
+        <span id="downloadPanelMode" class="live-label"><span class="live-dot" aria-hidden="true"></span>Live</span>
+        <button id="clearHistoryBtn" class="clear-history-btn" type="button" hidden>Clear finished</button>
+      </div>
+    </div>
+    <div id="downloadItems" class="download-items" aria-live="polite"></div>
+  </section>
+
+  <div id="listSummary" class="list-summary" hidden>
+    <span class="sort-label">Largest files first ↓</span>
+    <span id="sizeCoverage">Checking file sizes…</span>
+  </div>
+
+  <div id="videoList" class="video-list"></div>
+
+  <div class="popup-actions">
+    <button id="refreshBtn" class="refresh-btn">Rescan page</button>
+    <button id="clearBtn" class="refresh-btn danger">Clear &amp; rescan</button>
+  </div>
+
+  <div class="tip">Play the media briefly before rescanning to reveal more stream options.</div>
+  </main>
+
+  <section id="settingsView" class="settings-view" role="tabpanel" aria-labelledby="settingsTab" hidden>
+    <div class="settings-intro">
+      <h2>Download settings</h2>
+      <p>Choose where and how new downloads are saved. Active downloads keep the settings they started with.</p>
+    </div>
+
+    <form id="settingsForm" class="settings-card">
+      <div class="setting-field">
+        <div id="downloadDirectoryLabel" class="setting-label">Save downloads to</div>
+        <input id="downloadDirectory" type="hidden">
+        <div class="folder-picker" aria-labelledby="downloadDirectoryLabel">
+          <div id="downloadDirectoryDisplay" class="folder-path" aria-live="polite" title="Selected download folder">Loading…</div>
+          <button id="chooseDownloadDirectoryBtn" class="folder-picker-button" type="button">Choose folder…</button>
+        </div>
+        <p class="setting-help">Opens the macOS folder chooser. Your selection is saved immediately.</p>
+      </div>
+
+      <div class="setting-field">
+        <label class="setting-label" for="videoOutput">Video output</label>
+        <select id="videoOutput" class="setting-control">
+          <option value="compatible-mp4">Compatible MP4 — H.264 + AAC</option>
+          <option value="best-quality">Best available quality — format may vary</option>
+        </select>
+        <p class="setting-help">Applies to YouTube and streamed video downloads. Direct video files keep their original format.</p>
+      </div>
+
+      <div class="setting-field">
+        <label class="setting-label" for="concurrentFragments">Download connections</label>
+        <select id="concurrentFragments" class="setting-control">
+          <option value="2">2 — Gentle</option>
+          <option value="4">4 — Moderate</option>
+          <option value="8">8 — Fast (recommended)</option>
+          <option value="12">12 — Faster</option>
+          <option value="16">16 — Maximum</option>
+        </select>
+        <p class="setting-help">More connections can download streams faster but use more bandwidth.</p>
+      </div>
+
+      <div class="setting-field">
+        <label class="setting-label" for="historyLimit">Progress items shown</label>
+        <select id="historyLimit" class="setting-control">
+          <option value="1">1 item</option>
+          <option value="3">3 items</option>
+          <option value="5">5 items</option>
+          <option value="10">10 items</option>
+        </select>
+      </div>
+
+      <div class="settings-note">Folder and format changes apply to the next download. Your existing files are never moved or deleted.</div>
+
+      <div class="settings-actions">
+        <button id="resetSettingsBtn" class="settings-button" type="button">Reset defaults</button>
+        <button id="saveSettingsBtn" class="settings-button primary" type="submit">Save settings</button>
+      </div>
+      <p id="settingsFeedback" class="settings-feedback" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <script src="media-utils.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

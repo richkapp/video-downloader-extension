@@ -3,15 +3,20 @@ const fs = require('node:fs');
 const test = require('node:test');
 
 const {
+  DEFAULT_SETTINGS,
   buildYtDlpArgs,
+  clearDownloadHistory,
   createCookieJar,
   cookiesFromRequestHeader,
+  formatByteSize,
   isAllowedOrigin,
   isHttpUrl,
+  macFolderPickerArgs,
   parseProgress,
   removeCookieJar,
   safeFilename,
-  shouldExitForInactivity
+  shouldExitForInactivity,
+  validateSettings
 } = require('../download-server-v2');
 
 test('uses the native concurrent fragment downloader without verbose output', () => {
@@ -23,6 +28,105 @@ test('uses the native concurrent fragment downloader without verbose output', ()
   assert.equal(args.includes('--downloader'), false);
   assert.equal(args.includes('--verbose'), false);
   assert.equal(args.at(-1), 'https://cdn.example/video/master.m3u8');
+});
+
+test('passes a YouTube watch page to yt-dlp as one title-based download', () => {
+  const url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  const args = buildYtDlpArgs({ url });
+  const outputIndex = args.indexOf('-o');
+
+  assert.equal(args.includes('--no-playlist'), true);
+  assert.deepEqual(args.slice(args.indexOf('-t'), args.indexOf('-t') + 2), ['-t', 'mp4']);
+  assert.match(args[outputIndex + 1], /%\(title\)s\.%\(ext\)s$/);
+  assert.equal(args.at(-1), url);
+});
+
+test('applies compatible MP4 output to generic video streams', () => {
+  const args = buildYtDlpArgs({ url: 'https://cdn.example/video/master.m3u8' });
+  assert.deepEqual(args.slice(args.indexOf('-t'), args.indexOf('-t') + 2), ['-t', 'mp4']);
+});
+
+test('keeps audio streams out of the MP4 video preset', () => {
+  const args = buildYtDlpArgs({
+    url: 'https://cdn.example/audio/master.m3u8',
+    mediaType: 'audio'
+  });
+  assert.equal(args.includes('-t'), false);
+});
+
+test('applies configurable output folder, format, and fragment concurrency', () => {
+  const url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  const args = buildYtDlpArgs({
+    url,
+    downloadDirectory: '/tmp/media-downloader-test',
+    videoOutput: 'best-quality',
+    concurrentFragments: 12
+  });
+  const outputIndex = args.indexOf('-o');
+  const concurrencyIndex = args.indexOf('--concurrent-fragments');
+
+  assert.match(args[outputIndex + 1], /^\/tmp\/media-downloader-test\//);
+  assert.equal(args[concurrencyIndex + 1], '12');
+  assert.equal(args.includes('-t'), false);
+});
+
+test('validates persisted settings and rejects unsafe folder values', () => {
+  const valid = validateSettings({
+    ...DEFAULT_SETTINGS,
+    downloadDirectory: '/tmp',
+    concurrentFragments: 4,
+    historyLimit: 5
+  });
+  assert.deepEqual(valid.settings, {
+    ...DEFAULT_SETTINGS,
+    downloadDirectory: '/tmp',
+    concurrentFragments: 4,
+    historyLimit: 5
+  });
+
+  assert.match(
+    validateSettings({ ...DEFAULT_SETTINGS, downloadDirectory: '../relative' }).error,
+    /absolute path/
+  );
+  assert.match(
+    validateSettings({ ...DEFAULT_SETTINGS, historyLimit: 7 }).error,
+    /History limit/
+  );
+});
+
+test('migrates the former YouTube-only output setting', () => {
+  const legacy = { ...DEFAULT_SETTINGS };
+  delete legacy.videoOutput;
+  legacy.youtubeFormat = 'best-quality';
+
+  assert.equal(validateSettings(legacy).settings.videoOutput, 'best-quality');
+});
+
+test('builds a native macOS folder chooser without interpolating the path into AppleScript', () => {
+  const folder = '/Users/example/My Videos';
+  const args = macFolderPickerArgs(folder);
+
+  assert.equal(args.at(-1), folder);
+  assert.match(args.join(' '), /chooseFolder/);
+  assert.equal(args.slice(0, -1).some(arg => arg.includes(folder)), false);
+});
+
+test('clears completed history without removing active downloads', () => {
+  const downloads = new Map([
+    [1, { id: 1, status: 'complete' }],
+    [2, { id: 2, status: 'downloading' }],
+    [3, { id: 3, status: 'error' }]
+  ]);
+
+  assert.deepEqual(clearDownloadHistory(downloads, 1), { clearedIds: [1] });
+  assert.deepEqual(clearDownloadHistory(downloads, 2), { clearedIds: [], reason: 'active' });
+  assert.deepEqual(clearDownloadHistory(downloads), { clearedIds: [3] });
+  assert.deepEqual([...downloads.keys()], [2]);
+});
+
+test('formats final on-disk sizes for the progress UI', () => {
+  assert.equal(formatByteSize(10_941_384), '10.43MiB');
+  assert.equal(formatByteSize(1024), '1.00KiB');
 });
 
 test('forwards safe browser request context and strips header injection', () => {
@@ -119,6 +223,18 @@ test('parses yt-dlp fragment progress', () => {
   assert.equal(progress.speed, '2.35MiB/s');
   assert.equal(progress.eta, '00:32');
   assert.equal(progress.fragments, '54/120');
+});
+
+test('captures yt-dlp terminal errors for the extension progress UI', () => {
+  const progress = parseProgress(
+    'ERROR: Unable to rename file: source part file was not found',
+    {}
+  );
+
+  assert.deepEqual(progress, {
+    status: 'error',
+    error: 'Unable to rename file: source part file was not found'
+  });
 });
 
 test('idle reaper never stops active downloads and reaps inactive servers', () => {

@@ -8,16 +8,20 @@ A Chrome/Brave/Edge extension that detects and downloads videos and audio from w
 ## Features
 
 - **Auto-detects media** by monitoring network requests and scanning the page DOM
+- **Recognizes primary YouTube content** from watch, Shorts, and live pages instead of offering broken `videoplayback` transport requests
 - **Downloads HLS/DASH streams in parallel** with yt-dlp's native fragment downloader (8 fragments by default)
-- **Smart stream labeling** - shows resolution (720p, 1080p), duration, estimated size, and recommends the best option
-- **Real-time progress UI** at `http://127.0.0.1:9876` with speed, ETA, and stop controls
+- **Smart stream labeling** - shows resolution, format, duration, exact or estimated size, and whether a stream includes audio
+- **Largest-first results** - groups repeated stream requests, decodes useful YouTube metadata, and puts known file sizes ahead of unknown sizes
+- **Persistent in-popup progress** with percentage, speed, ETA, errors, stop controls, and removable history; close and reopen the extension without losing the active download state
+- **Compatible MP4 output** prefers H.264 video with AAC audio for native playback on macOS and other devices
+- **Persistent settings tab** uses a native folder chooser and controls video output, parallel download connections, and visible progress history
 - **Automatic server lifecycle** - clicking the extension starts the local server; two idle hours stops it
 - **Audio support** - MP3, M4A, AAC, OGG, OPUS, WAV, FLAC, and more
 - **Desktop app** (Electron) with system tray for easy server management
 
 ## How It Works
 
-1. **Browser Extension** - Monitors network traffic to detect video/audio URLs when you play media
+1. **Browser Extension** - Recognizes primary YouTube pages and monitors other sites for downloadable video/audio URLs
 2. **Download Server** - Local Node.js server receives URLs and uses yt-dlp + ffmpeg to download
 3. **yt-dlp + ffmpeg** - Downloads fragments concurrently, then remuxes when the container needs it
 
@@ -69,10 +73,11 @@ The server runs on `http://127.0.0.1:9876`.
 
 1. **Navigate to a page** with video content and play the video briefly
 2. **Click the extension icon**; the local server starts automatically
-3. Detected media appears with quality info, duration, and size estimates
-4. The **recommended** stream is highlighted in green - click **Download (Best)**
-5. Monitor progress at **http://127.0.0.1:9876**
-6. Find your video in `~/Downloads` when complete
+3. Optionally open **Settings** to choose the save folder, video output, connection count, and visible history
+4. On YouTube, use the single **Primary video** card; yt-dlp selects and merges video and audio using your chosen output mode
+5. On other sites, detected options are sorted from largest to smallest with quality, duration, and size information when available
+6. Monitor progress inside the extension popup; close and reopen it at any time to restore the current server-backed state. The detailed server page remains available at **http://127.0.0.1:9876**
+7. Find your video in the folder selected under **Settings** when complete
 
 ### Tips
 
@@ -94,9 +99,10 @@ The server runs on `http://127.0.0.1:9876`.
 
 | Media Type | Download Method |
 |------------|----------------|
+| YouTube watch, Shorts, and live pages | Canonical page URL -> yt-dlp selects video + audio using the configured output mode -> selected folder |
 | Direct files (MP4, MP3, etc.) | Browser's native download dialog |
-| HLS streams (.m3u8) | Sent to local server -> yt-dlp + ffmpeg -> ~/Downloads |
-| DASH streams (.mpd) | Sent to local server -> yt-dlp -> ~/Downloads |
+| HLS streams (.m3u8) | Sent to local server -> yt-dlp + ffmpeg -> selected folder |
+| DASH streams (.mpd) | Sent to local server -> yt-dlp -> selected folder |
 
 ## Project Structure
 
@@ -136,8 +142,8 @@ video-downloader-extension/
                             │                      │
                             │  - Parallel HLS/DASH │
                             │  - Retries on error  │
-                            │  - Outputs MP4       │
-                            │  - Saves to ~/Downloads
+                            │  - Configured output │
+                            │  - Saves to configured folder
                             └──────────────────────┘
 ```
 
