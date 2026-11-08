@@ -1,6 +1,6 @@
 {
   "name": "video-downloader-extension",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
   "description": "A Chromium extension and local yt-dlp server for downloading detected video and audio.",
   "author": "richkapp",
