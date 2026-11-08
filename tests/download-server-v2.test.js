@@ -9,6 +9,7 @@ const {
   createCookieJar,
   cookiesFromRequestHeader,
   formatByteSize,
+  isAllowedHost,
   isAllowedOrigin,
   isHttpUrl,
   macFolderPickerArgs,
@@ -206,10 +207,26 @@ test('rejects unsafe URL schemes and keeps output filenames inside Downloads', (
   assert.equal(safeFilename('../../outside.mp4'), 'outside.mp4');
 });
 
-test('only permits extension and local UI origins', () => {
-  assert.equal(isAllowedOrigin('chrome-extension://abc123'), true);
+test('only permits this extension and local UI origins', () => {
+  assert.equal(isAllowedOrigin('chrome-extension://pjegapeinfppenlhmokdigfjgcdpjidk'), true);
+  assert.equal(isAllowedOrigin('chrome-extension://pjegapeinfppenlhmokdigfjgcdpjidk/'), true);
+  assert.equal(isAllowedOrigin('chrome-extension://abcdefghijklmnopabcdefghijklmnop'), false);
+  assert.equal(isAllowedOrigin('chrome-extension://abc123'), false);
   assert.equal(isAllowedOrigin('http://127.0.0.1:9876'), true);
   assert.equal(isAllowedOrigin('https://malicious.example'), false);
+  assert.equal(isAllowedOrigin('null'), false);
+});
+
+test('rejects foreign Host headers to block DNS rebinding', () => {
+  assert.equal(isAllowedHost('127.0.0.1:9876'), true);
+  assert.equal(isAllowedHost('localhost:9876'), true);
+  assert.equal(isAllowedHost('evil.example:9876'), false);
+  assert.equal(isAllowedHost(undefined), false);
+});
+
+test('ends option parsing before the URL', () => {
+  const args = buildYtDlpArgs({ url: 'https://cdn.example/a.m3u8' });
+  assert.equal(args.at(-2), '--');
 });
 
 test('parses yt-dlp fragment progress', () => {

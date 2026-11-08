@@ -114,7 +114,6 @@ video-downloader-extension/
 ├── popup.html / popup.js      # Extension popup - detects and displays media
 ├── background.js              # Service worker - monitors network requests
 ├── download-server-v2.js      # Download server with web UI + yt-dlp
-├── download-server.js         # Legacy server (segment-based HLS)
 ├── Install Native Host.command # One-time automatic-start installer
 ├── native-host/                # Chrome native messaging bootstrapper
 ├── icon.png                   # Extension icon

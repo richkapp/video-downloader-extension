@@ -338,7 +338,8 @@ function buildYtDlpArgs({
     args.push('--cookies', cookieFile);
   }
 
-  args.push(url);
+  // End option parsing so a URL can never be read as a yt-dlp flag.
+  args.push('--', url);
   return args;
 }
 
@@ -440,11 +441,29 @@ function refreshCompletedFileMetadata(download) {
   }
 }
 
+// Only this extension may drive the server. Accepting any chrome-extension://
+// origin would let every other installed extension change the download folder
+// and start downloads. Self-hosted builds with a different ID can override this
+// with a comma-separated VIDEO_DOWNLOADER_EXTENSION_IDS.
+const DEFAULT_EXTENSION_ID = 'pjegapeinfppenlhmokdigfjgcdpjidk';
+const ALLOWED_EXTENSION_IDS = new Set(
+  (process.env.VIDEO_DOWNLOADER_EXTENSION_IDS || DEFAULT_EXTENSION_ID)
+    .split(',')
+    .map(id => id.trim())
+    .filter(id => /^[a-p]{32}$/.test(id))
+);
+
 function isAllowedOrigin(origin) {
-  return !origin ||
-    origin.startsWith('chrome-extension://') ||
-    origin === `http://127.0.0.1:${PORT}` ||
-    origin === `http://localhost:${PORT}`;
+  if (!origin) return true;
+  if (origin === `http://127.0.0.1:${PORT}` || origin === `http://localhost:${PORT}`) return true;
+  const match = /^chrome-extension:\/\/([a-p]{32})\/?$/.exec(origin);
+  return Boolean(match && ALLOWED_EXTENSION_IDS.has(match[1]));
+}
+
+// Blocks DNS rebinding: a hostile page that rebinds its own hostname to
+// 127.0.0.1 sends its own Host header and would otherwise read local state.
+function isAllowedHost(host) {
+  return host === `127.0.0.1:${PORT}` || host === `localhost:${PORT}`;
 }
 
 function broadcast(data) {
@@ -577,7 +596,7 @@ function parseProgress(line, download) {
 const server = http.createServer((req, res) => {
   // Only extensions and this server's own UI may call the localhost API.
   const requestOrigin = req.headers.origin;
-  if (!isAllowedOrigin(requestOrigin)) {
+  if (!isAllowedHost(req.headers.host) || !isAllowedOrigin(requestOrigin)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Origin not allowed' }));
     return;
@@ -1185,6 +1204,7 @@ module.exports = {
   createCookieJar,
   cookiesFromRequestHeader,
   formatByteSize,
+  isAllowedHost,
   isAllowedOrigin,
   isHttpUrl,
   loadSettings,
