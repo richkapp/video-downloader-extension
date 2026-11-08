@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Video Downloader",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAstCGYE12OKNBWn+2npQ+eZB9o5mycPdJfIsmhEt1ADtmWxpc/9pBErQGnzAB01Ws0sVSqHi2R5MtwnHth7zHISca8KKA1b16MSsH31lcF+BSjhc1tjwfKHLVhY/XTEQ3gqOSKCWkfa8QlvZoyAlVNtCiBMKDobYXeobIr5GD3Ao7xgLyXSPNocQ01ttt2MVpDW53GOM5SI5fAu3/G3KVyu99PtimvEfwwuh2t0tCmRKrktEqWnlNk5XL+4pFzdWoelR67KXGopzUTkHoc27yL0pBqNOG1nWyg/2qaAffnA6Muk5i+Wk67+oBq7Z0DhOekdo+AiQbuDbkz0qQH98g4wIDAQAB",
   "description": "Download videos from the current page",
   "permissions": [
