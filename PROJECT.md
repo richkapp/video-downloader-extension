@@ -35,6 +35,12 @@ On macOS with Homebrew:
 brew install node yt-dlp ffmpeg
 ```
 
+On Arch or Omarchy:
+
+```bash
+sudo pacman -S nodejs yt-dlp ffmpeg
+```
+
 ## Setup
 
 1. Open the browser's extensions page.
@@ -97,7 +103,7 @@ The `/download` request accepts `{ url, filename?, referer?, origin?, userAgent?
 
 The manifest contains a stable development key, giving this unpacked extension the ID `pjegapeinfppenlhmokdigfjgcdpjidk`. The native-host installer registers `com.videodownloader.bootstrap` only for that origin. On popup open, the extension checks `/status`, calls the host if necessary, and explicitly calls `/wake` when the server is already running.
 
-The native host uses an atomic per-port startup lock, starts Node detached without opening Terminal, waits for `/status`, replies to Chrome, and exits. Server logs are stored at `~/Library/Logs/VideoDownloader/server.log`.
+The native host uses an atomic per-port startup lock, starts Node detached without opening Terminal, waits for `/status`, replies to Chrome, and exits. Server logs are stored at `~/Library/Logs/VideoDownloader/server.log` on macOS and `~/.local/state/video-downloader/server.log` on Linux. On Linux, `install.sh` registers the host and adds the extension to each `~/.config/<browser>-flags.conf` `--load-extension` list.
 
 ## Known Limits
 

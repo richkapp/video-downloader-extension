@@ -30,12 +30,32 @@ The extension can't download HLS streams directly (browsers can't merge video fr
 
 ## Requirements
 
-- **Node.js** (`brew install node`)
-- **yt-dlp** (`brew install yt-dlp`)
-- **ffmpeg** (`brew install ffmpeg`)
-- **Chrome, Brave, or Edge** browser
+- **Node.js** 18 or newer
+- **yt-dlp**
+- **ffmpeg**
+- **Chrome, Brave, Edge, Chromium, or Vivaldi** browser on macOS or Linux
 
-## Installation
+On macOS: `brew install node yt-dlp ffmpeg`. On Arch and Omarchy: `sudo pacman -S nodejs yt-dlp ffmpeg`. On Debian and Ubuntu: `sudo apt install nodejs yt-dlp ffmpeg`.
+
+## Installation on Linux (including Omarchy)
+
+```bash
+git clone https://github.com/richkapp/video-downloader-extension.git ~/.local/share/video-downloader-extension
+~/.local/share/video-downloader-extension/install.sh
+```
+
+Then restart your browser. The installer:
+
+- registers the native host that starts the download server on demand, for every Chromium-based browser profile it finds under `~/.config`
+- adds the extension to `--load-extension` in any `~/.config/<browser>-flags.conf` it finds (the files Arch packages and Omarchy use), keeping the extensions already listed there
+
+If your browser has no flags file, load it once by hand: open `brave://extensions` (or `chrome://extensions`), turn on **Developer mode**, click **Load unpacked** and choose the cloned folder.
+
+To update, `git pull` in the cloned folder and restart the browser. To remove everything, run `./install.sh --uninstall`.
+
+The **Choose folder** button in Settings uses zenity, kdialog, or Omarchy's desktop portal chooser, whichever is installed. Server logs go to `~/.local/state/video-downloader/server.log`.
+
+## Installation on macOS
 
 ### 1. Install the Browser Extension
 
@@ -167,7 +187,7 @@ video-downloader-extension/
 To tune concurrency, start the server with `VIDEO_DOWNLOADER_CONCURRENCY=4 node download-server-v2.js`. Valid values are 1-16; lowering it can help CDNs that rate-limit parallel requests.
 
 ### Download fails
-- Update yt-dlp: `brew upgrade yt-dlp`
+- Update yt-dlp: `brew upgrade yt-dlp` on macOS, or your package manager on Linux
 - Some sites have DRM protection that prevents downloading
 - Check terminal output for specific error messages
 

@@ -7,7 +7,16 @@ const path = require('node:path');
 const test = require('node:test');
 
 const manifest = require('../manifest.json');
-const { EXTENSION_ID, HOST_NAME, hostManifest } = require('../native-host/install');
+const os = require('node:os');
+const { execFileSync } = require('node:child_process');
+const { EXTENSION_ID, HOST_NAME, browserTargets, hostManifest, install, uninstall } = require('../native-host/install');
+const { serverLogDir } = require('../native-host/native-host.js');
+
+function temporaryHome(t) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'video-downloader-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  return home;
+}
 
 function extensionIdFromKey(key) {
   const der = Buffer.from(key, 'base64');
@@ -131,4 +140,55 @@ test('native host starts the real server and its idle reaper stops it', async ()
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.equal(await isHealthy(), false, 'server should exit after the configured idle timeout');
+});
+
+test('targets Linux browser profiles under XDG_CONFIG_HOME', () => {
+  const targets = browserTargets('linux', '/home/example', { XDG_CONFIG_HOME: '/home/example/.cfg' });
+  const brave = targets.find(target => target.browserName === 'Brave');
+  assert.equal(brave.destination, `/home/example/.cfg/BraveSoftware/Brave-Browser/NativeMessagingHosts/${HOST_NAME}.json`);
+  assert.equal(browserTargets('linux', '/home/example', {}).every(target => target.browserBase.startsWith('/home/example/.config/')), true);
+  assert.equal(browserTargets('darwin', '/Users/example', {}).every(target => target.browserBase.startsWith('/Users/example/Library/Application Support/')), true);
+});
+
+test('installs and uninstalls the host only for browsers that exist', (t) => {
+  const home = temporaryHome(t);
+  fs.mkdirSync(path.join(home, '.config', 'BraveSoftware', 'Brave-Browser'), { recursive: true });
+
+  const installed = install({ platform: 'linux', home, env: {}, quiet: true });
+  assert.deepEqual(installed.map(item => item.browserName), ['Brave']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(installed[0].destination, 'utf8')), hostManifest());
+  assert.equal(fs.existsSync(path.join(home, '.config', 'chromium')), false);
+
+  assert.equal(uninstall({ platform: 'linux', home, env: {}, quiet: true }), 1);
+  assert.equal(fs.existsSync(installed[0].destination), false);
+});
+
+test('logs the server under the platform log location', () => {
+  assert.equal(serverLogDir('darwin', '/Users/example', {}), '/Users/example/Library/Logs/VideoDownloader');
+  assert.equal(serverLogDir('linux', '/home/example', {}), '/home/example/.local/state/video-downloader');
+  assert.equal(serverLogDir('linux', '/home/example', { XDG_STATE_HOME: '/s' }), '/s/video-downloader');
+});
+
+test('install.sh adds the extension to browser flags without dropping others and removes it cleanly', { skip: process.platform !== 'linux' }, (t) => {
+  const home = temporaryHome(t);
+  const projectDir = path.resolve(__dirname, '..');
+  const config = path.join(home, '.config');
+  fs.mkdirSync(path.join(config, 'BraveSoftware', 'Brave-Browser'), { recursive: true });
+  const braveFlags = path.join(config, 'brave-flags.conf');
+  const chromiumFlags = path.join(config, 'chromium-flags.conf');
+  fs.writeFileSync(braveFlags, '--ozone-platform=wayland\n--load-extension=/opt/other\n');
+  fs.writeFileSync(chromiumFlags, '--ozone-platform=wayland\n');
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: config };
+  const script = path.join(projectDir, 'install.sh');
+
+  execFileSync(script, { env, stdio: 'pipe' });
+  execFileSync(script, { env, stdio: 'pipe' });
+  assert.match(fs.readFileSync(braveFlags, 'utf8'), new RegExp(`^--load-extension=/opt/other,${projectDir}$`, 'm'));
+  assert.equal(fs.readFileSync(chromiumFlags, 'utf8'), `--ozone-platform=wayland\n--load-extension=${projectDir}\n`);
+  assert.equal(fs.existsSync(path.join(config, 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts', `${HOST_NAME}.json`)), true);
+
+  execFileSync(script, ['--uninstall'], { env, stdio: 'pipe' });
+  assert.equal(fs.readFileSync(braveFlags, 'utf8'), '--ozone-platform=wayland\n--load-extension=/opt/other\n');
+  assert.equal(fs.readFileSync(chromiumFlags, 'utf8'), '--ozone-platform=wayland\n');
+  assert.equal(fs.existsSync(path.join(config, 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts', `${HOST_NAME}.json`)), false);
 });

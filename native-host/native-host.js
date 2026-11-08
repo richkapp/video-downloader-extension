@@ -130,12 +130,17 @@ function releaseStartLock() {
   }
 }
 
+function serverLogDir(platform = process.platform, home = os.homedir(), env = process.env) {
+  if (platform === 'darwin') return path.join(home, 'Library', 'Logs', 'VideoDownloader');
+  return path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'video-downloader');
+}
+
 function startServerProcess() {
   if (!fs.existsSync(SERVER_PATH)) {
     throw new Error(`Download server not found at ${SERVER_PATH}`);
   }
 
-  const logDir = path.join(os.homedir(), 'Library', 'Logs', 'VideoDownloader');
+  const logDir = serverLogDir();
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   const logPath = path.join(logDir, 'server.log');
   const logFd = fs.openSync(logPath, 'a', 0o600);
@@ -219,5 +224,6 @@ module.exports = {
   readNativeMessage,
   releaseStartLock,
   sendNativeMessage,
+  serverLogDir,
   waitForServer
 };

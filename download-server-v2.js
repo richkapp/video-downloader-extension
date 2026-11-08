@@ -150,32 +150,58 @@ function macFolderPickerArgs(initialDirectory) {
   ];
 }
 
-function selectDownloadDirectory(initialDirectory = serverSettings.downloadDirectory) {
-  if (process.platform !== 'darwin') {
-    return Promise.reject(new Error('Native folder selection is currently available on macOS'));
-  }
+// Linux folder choosers in preference order. Each exits 1 when the user cancels.
+// omarchy-file-select drives the XDG desktop portal on Omarchy.
+function linuxFolderPickerCommands(initialDirectory) {
+  const title = 'Choose where Media Downloader saves videos';
+  const startPath = initialDirectory.endsWith(path.sep) ? initialDirectory : `${initialDirectory}${path.sep}`;
+  return [
+    ['zenity', ['--file-selection', '--directory', `--title=${title}`, `--filename=${startPath}`]],
+    ['kdialog', ['--getexistingdirectory', initialDirectory, '--title', title]],
+    ['omarchy-file-select', ['--directory', '--title', title]]
+  ];
+}
 
+function runFolderPicker(command, args, { exitOneMeansCancel = true } = {}) {
   return new Promise((resolve, reject) => {
-    execFile('/usr/bin/osascript', macFolderPickerArgs(initialDirectory), { timeout: 120_000 }, (error, stdout) => {
-      if (error) {
-        reject(new Error(error.killed ? 'Folder selection timed out' : 'Could not open the folder chooser'));
-        return;
-      }
-      const selectedPath = stdout.trim();
-      if (!selectedPath || selectedPath === '__CANCELLED__') {
-        resolve({ cancelled: true });
-        return;
-      }
-      const validation = validateSettings(
-        { ...serverSettings, downloadDirectory: selectedPath },
-        { base: serverSettings, checkFilesystem: true }
-      );
-      if (validation.error) {
-        reject(new Error(validation.error));
-        return;
-      }
-      resolve({ path: validation.settings.downloadDirectory });
+    execFile(command, args, { timeout: 120_000 }, (error, stdout) => {
+      if (error?.code === 'ENOENT') resolve({ missing: true });
+      else if (exitOneMeansCancel && error?.code === 1 && !error.killed) resolve({ cancelled: true });
+      else if (error) reject(new Error(error.killed ? 'Folder selection timed out' : 'Could not open the folder chooser'));
+      else resolve({ output: stdout });
     });
+  });
+}
+
+async function pickFolder(initialDirectory, platform = process.platform) {
+  if (platform === 'darwin') {
+    // The AppleScript reports a cancel as __CANCELLED__; a non-zero exit is a real failure.
+    const result = await runFolderPicker('/usr/bin/osascript', macFolderPickerArgs(initialDirectory), { exitOneMeansCancel: false });
+    if (result.missing) throw new Error('Could not open the folder chooser');
+    return result;
+  }
+  if (platform === 'linux') {
+    for (const [command, args] of linuxFolderPickerCommands(initialDirectory)) {
+      const result = await runFolderPicker(command, args);
+      if (!result.missing) return result;
+    }
+    throw new Error('No folder chooser found. Install zenity or kdialog');
+  }
+  throw new Error('Native folder selection is available on macOS and Linux');
+}
+
+function selectDownloadDirectory(initialDirectory = serverSettings.downloadDirectory) {
+  return pickFolder(initialDirectory).then(result => {
+    const selectedPath = result.cancelled ? '' : result.output.trim().split('\n')[0];
+    if (!selectedPath || selectedPath === '__CANCELLED__') {
+      return { cancelled: true };
+    }
+    const validation = validateSettings(
+      { ...serverSettings, downloadDirectory: selectedPath },
+      { base: serverSettings, checkFilesystem: true }
+    );
+    if (validation.error) throw new Error(validation.error);
+    return { path: validation.settings.downloadDirectory };
   });
 }
 
@@ -694,7 +720,7 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(result));
       })
       .catch(error => {
-        res.writeHead(process.platform === 'darwin' ? 500 : 501, { 'Content-Type': 'application/json' });
+        res.writeHead(['darwin', 'linux'].includes(process.platform) ? 500 : 501, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
       });
     return;
@@ -1208,8 +1234,10 @@ module.exports = {
   isAllowedOrigin,
   isHttpUrl,
   loadSettings,
+  linuxFolderPickerCommands,
   macFolderPickerArgs,
   parseProgress,
+  pickFolder,
   removeCookieJar,
   safeFilename,
   serializeNetscapeCookies,

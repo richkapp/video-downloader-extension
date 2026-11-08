@@ -12,6 +12,7 @@ const {
   isAllowedHost,
   isAllowedOrigin,
   isHttpUrl,
+  linuxFolderPickerCommands,
   macFolderPickerArgs,
   parseProgress,
   removeCookieJar,
@@ -110,6 +111,18 @@ test('builds a native macOS folder chooser without interpolating the path into A
   assert.equal(args.at(-1), folder);
   assert.match(args.join(' '), /chooseFolder/);
   assert.equal(args.slice(0, -1).some(arg => arg.includes(folder)), false);
+});
+
+test('offers Linux folder choosers in preference order with the path as a discrete argument', () => {
+  const folder = '/home/example/My Videos';
+  const commands = linuxFolderPickerCommands(folder);
+
+  assert.deepEqual(commands.map(([command]) => command), ['zenity', 'kdialog', 'omarchy-file-select']);
+  for (const [, args] of commands) {
+    assert.equal(args.some(arg => arg.startsWith('--directory') || arg === '--getexistingdirectory'), true);
+  }
+  assert.equal(commands[0][1].includes(`--filename=${folder}/`), true);
+  assert.equal(commands[1][1].includes(folder), true);
 });
 
 test('clears completed history without removing active downloads', () => {

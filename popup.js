@@ -121,7 +121,7 @@ async function chooseDownloadDirectory() {
   const button = document.getElementById('chooseDownloadDirectoryBtn');
   button.disabled = true;
   button.textContent = 'Opening chooser…';
-  setSettingsFeedback('Choose a folder in the macOS window.');
+  setSettingsFeedback('Choose a folder in the system window.');
 
   try {
     const response = await fetch(`${SERVER_BASE_URL}/settings/select-folder`, { method: 'POST' });
@@ -648,7 +648,7 @@ function youtubeDownloadPresentation() {
     formatChip: 'MP4',
     button: 'Download MP4 video',
     downloading: 'Downloading compatible MP4…',
-    explanation: 'yt-dlp prefers H.264 video and AAC audio, then merges them into a macOS-compatible MP4 file. The final size appears in download progress.'
+    explanation: 'yt-dlp prefers H.264 video and AAC audio, then merges them into an MP4 that plays natively on macOS, Linux, and most devices. The final size appears in download progress.'
   };
 }
 
